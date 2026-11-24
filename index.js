@@ -618,7 +618,10 @@
 
     function canvasXY(e) {
         const r = cv.getBoundingClientRect();
-        return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height];
+        const k = Math.min(r.width / cv.width, r.height / cv.height);
+        const w = cv.width * k, h = cv.height * k;
+        const ox = r.left + (r.width - w) / 2, oy = r.top + (r.height - h) / 2;
+        return [(e.clientX - ox) / k, (e.clientY - oy) / k];
     }
 
     function buildPanel() {
@@ -628,7 +631,7 @@
         <div id="cp_panel">
           <div class="cp_head"><b>✂ 文字抽取成图</b><span id="cp_close">✕</span></div>
           <div class="cp_body">
-            <div class="cp_preview"><canvas id="cp_canvas"></canvas><div id="cp_hint"></div></div>
+            <div class="cp_preview"><div class="cp_stage"><canvas id="cp_canvas"></canvas></div><div id="cp_hint"></div></div>
             <div class="cp_side">
               <label class="cp_blk"><span>模板</span><select id="cp_tpl"></select></label>
               <label class="cp_blk"><span>文字（可直接编辑）</span><textarea id="cp_text" rows="4" placeholder="${SAMPLE}"></textarea></label>
@@ -664,8 +667,8 @@
             buildControls(); render();
         });
 
-        overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.classList.remove('open'); });
-        $('#cp_close').addEventListener('click', () => overlay.classList.remove('open'));
+        overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
+        $('#cp_close').addEventListener('click', closePanel);
         $('#cp_text').addEventListener('input', e => { S.text = e.target.value; scheduleRender(); });
 
         // 图片来源
@@ -753,6 +756,8 @@
         buildControls();
     }
 
+    function closePanel() { overlay.classList.remove('open'); document.body.style.overflow = ''; }
+
     function openPanel(text) {
         if (!overlay) buildPanel();
         if (typeof text === 'string' && text.trim()) {
@@ -761,6 +766,7 @@
             S.keep = null; // 文字变了，涂黑诗重新抽取
         }
         overlay.classList.add('open');
+        document.body.style.overflow = 'hidden';
         render();
     }
 
