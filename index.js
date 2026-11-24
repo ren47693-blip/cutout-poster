@@ -81,10 +81,14 @@
         const out = [];
         if (gran === 'word' && window.Intl && Intl.Segmenter) {
             segmenter ??= new Intl.Segmenter(['zh', 'en'], { granularity: 'word' });
-            for (const s of segmenter.segment(line)) {
-                const t = s.segment;
-                if (/^\s+$/.test(t)) { if (out.length) out[out.length - 1].sp = true; continue; }
-                out.push({ t, slot: false, sp: false });
+            for (const part of line.split(/(\{\s*\})/)) {
+                if (!part) continue;
+                if (/^\{\s*\}$/.test(part)) { out.push({ t: part, slot: true, sp: false }); continue; }
+                for (const sg of segmenter.segment(part)) {
+                    const t = sg.segment;
+                    if (/^\s+$/.test(t)) { if (out.length) out[out.length - 1].sp = true; continue; }
+                    out.push({ t, slot: false, sp: false });
+                }
             }
             return out;
         }
@@ -182,7 +186,7 @@
     /* ---------- 运行时状态 ---------- */
     const S = {
         text: '', img: null, imgId: 0, hits: [], geo: null,
-        cut: { holes: [] }, keep: null, cells: null,
+        cut: { holes: [] }, slots: new Set(), keep: null, cells: null,
         drag: null, undo: [], ctls: {},
     };
     const TEMPLATES = {};
@@ -232,42 +236,34 @@
             c.lineWidth = 2; c.strokeStyle = P.fg; c.stroke();
         }
     }
-    function autoSlots(toks, n) {
-        const real = toks.filter(t => !t.nl).length;
-        const pick = new Set();
-        for (let k = 1; k <= n; k++) pick.add(clamp(Math.round(k * real / (n + 1)) - 1, 0, Math.max(0, real - 1)));
-        const out = []; let ri = 0;
-        if (!real) { for (let i = 0; i < n; i++) out.push({ t: '{ }', slot: true, sp: true }); return out; }
-        toks.forEach(t => {
-            out.push(t);
-            if (!t.nl) { if (pick.has(ri)) out.push({ t: '{ }', slot: true, sp: true }); ri++; }
-        });
-        return out;
-    }
-
     const cutout = {
         id: 'cutout',
         name: '挖洞置换',
-        hint: '点图片：挖一个洞；再点同一个洞：取消。"下方散落"可拖动碎片。文字里写 { } 可指定槽位，没写则平均分布。',
+        hint(P) {
+            return P.layout === 'slots'
+                ? '点图片：挖洞（再点取消）。点文字：在那里放一个槽位（再点取消）。槽位按文字顺序，依次装入先挖的洞。'
+                : '点图片：挖洞（再点取消）。下方的碎片可以拖动。';
+        },
         defaults: {
-            layout: 'below', shape: 'square', size: 12, aspect: 1.5, lowerPct: 100,
+            layout: 'below', gran: 'char', shape: 'square', size: 12, aspect: 1.5, lowerPct: 100,
             bg: '#f1efe6', fg: '#222222', border: false, fontSize: 3.4, font: 'theme',
         },
         controls: [
-            { key: 'layout', label: '碎片落点', type: 'select', options: [['below', '下方散落'], ['slots', '文字 { } 槽位']] },
-            { key: 'shape', label: '洞的形状', type: 'select', options: [['square', '方形'], ['circle', '圆形'], ['rect', '长方形'], ['ellipse', '椭圆'], ['diamond', '菱形'], ['triangle', '三角'], ['star', '星形'], ['heart', '爱心']] },
-            { key: 'size', label: '洞的大小 %', type: 'range', min: 3, max: 40, step: 1 },
-            { key: 'aspect', label: '长宽比(长方形/椭圆)', type: 'range', min: 0.4, max: 3, step: 0.1 },
-            { key: 'lowerPct', label: '下方区域高度 %', type: 'range', min: 40, max: 160, step: 5, show: P => P.layout === 'below' },
-            { key: 'fontSize', label: '文字大小', type: 'range', min: 1.5, max: 6, step: 0.1, show: P => P.layout === 'slots' },
-            { key: 'font', label: '字体', type: 'select', options: FONT_OPTS, show: P => P.layout === 'slots' },
-            { key: 'bg', label: '底色/洞色', type: 'color' },
-            { key: 'fg', label: '文字/描边色', type: 'color' },
-            { key: 'border', label: '碎片描边', type: 'checkbox' },
+            { group: '版面', key: 'layout', label: '碎片落点', type: 'select', options: [['below', '下方散落'], ['slots', '文字槽位']] },
+            { group: '版面', key: 'gran', label: '文字点选单位', type: 'select', options: [['char', '逐字'], ['word', '按词']], show: P => P.layout === 'slots', onChange() { S.slots = new Set(); } },
+            { group: '版面', key: 'lowerPct', label: '下方区域高度 %', type: 'range', min: 40, max: 160, step: 5, show: P => P.layout === 'below' },
+            { group: '形状', key: 'shape', label: '洞的形状', type: 'select', options: [['square', '方形'], ['circle', '圆形'], ['rect', '长方形'], ['ellipse', '椭圆'], ['diamond', '菱形'], ['triangle', '三角'], ['star', '星形'], ['heart', '爱心']] },
+            { group: '形状', key: 'size', label: '洞的大小 %', type: 'range', min: 3, max: 40, step: 1 },
+            { group: '形状', key: 'aspect', label: '长宽比(长方形/椭圆)', type: 'range', min: 0.4, max: 3, step: 0.1 },
+            { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 1.5, max: 6, step: 0.1, show: P => P.layout === 'slots' },
+            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS, show: P => P.layout === 'slots' },
+            { group: '颜色', key: 'bg', label: '底色/洞色', type: 'color' },
+            { group: '颜色', key: 'fg', label: '文字/描边色', type: 'color' },
+            { group: '颜色', key: 'border', label: '碎片描边', type: 'checkbox' },
         ],
-        snap() { return JSON.stringify(S.cut.holes); },
-        restore(s) { S.cut.holes = JSON.parse(s); },
-        clear() { S.cut.holes = []; },
+        snap() { return JSON.stringify({ h: S.cut.holes, s: [...S.slots] }); },
+        restore(str) { const d = JSON.parse(str); S.cut.holes = d.h; S.slots = new Set(d.s); },
+        clear() { S.cut.holes = []; S.slots = new Set(); },
         render(cv, c, P) {
             const img = S.img, holes = S.cut.holes;
             const W = 1200, IW = W, IH = Math.round(W * imgH(img) / imgW(img));
@@ -287,13 +283,18 @@
             });
         },
         onDown(x, y, P) {
+            const inside = h => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h;
             for (let k = S.hits.length - 1; k >= 0; k--) {
                 const h = S.hits[k];
-                if (h.kind === 'frag' && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) {
+                if (h.kind === 'frag' && inside(h)) {
                     const ho = S.cut.holes[h.i];
                     S.drag = { i: h.i, sx: x, sy: y, ox: ho.ox || 0, oy: ho.oy || 0 };
                     return true;
                 }
+            }
+            if (P.layout === 'slots') {
+                const t = S.hits.find(h => (h.kind === 'sslot' || h.kind === 'stok') && inside(h));
+                if (t) { S.slots.has(t.i) ? S.slots.delete(t.i) : S.slots.add(t.i); return true; }
             }
             const g = S.geo;
             if (!g || x < g.x || x > g.x + g.w || y < g.y || y > g.y + g.h) return false;
@@ -322,8 +323,12 @@
         const fs = Math.round(W * P.fontSize / 100);
         const fam = fontFamily(P.font);
         mctx.font = `${fs}px ${fam}`;
-        let toks = tokenize((S.text || '').trim() || SAMPLE, 'char');
-        if (!toks.some(t => t.slot)) toks = autoSlots(toks, holes.length);
+        const base = tokenize((S.text || '').trim() || SAMPLE, P.gran);
+        const toks = [];
+        base.forEach((t, i) => {
+            toks.push(Object.assign({}, t, { ti: i }));
+            if (!t.slot && !t.nl && S.slots.has(i)) toks.push({ t: '{ }', slot: true, sp: true, ti: -1, after: i });
+        });
         const spaceW = mctx.measureText(' ').width, braceW = mctx.measureText('{').width;
         let slotI = 0;
         const items = toks.map(tk => {
@@ -333,9 +338,9 @@
                 let fh = fs * 2.4, fw = g ? fh * (g.w * IW) / (g.h * IH) : fh * 1.4;
                 const cap = W * 0.28;
                 if (fw > cap) { fw = cap; fh = g ? fw * (g.h * IH) / (g.w * IW) : fw / 1.4; }
-                return { slot: true, i, fw, fh, w: braceW * 2 + fw + fs * 0.5 + spaceW };
+                return { slot: true, i, fw, fh, after: tk.after, w: braceW * 2 + fw + fs * 0.5 + spaceW };
             }
-            return { t: tk.t, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) };
+            return { t: tk.t, ti: tk.ti, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) };
         });
         const lines = wrap(items, W * 0.84);
         lines.forEach(l => {
@@ -365,7 +370,11 @@
                         c.strokeRect(fx, cy - it.fh / 2, it.fw, it.fh); c.restore();
                     }
                     c.fillStyle = P.fg; c.fillText('}', fx + it.fw + fs * 0.25, cy);
-                } else { c.fillStyle = P.fg; c.fillText(it.t, x, cy); }
+                    if (it.after !== undefined) S.hits.push({ kind: 'sslot', i: it.after, x, y, w: it.w, h: l.lh });
+                } else {
+                    c.fillStyle = P.fg; c.fillText(it.t, x, cy);
+                    S.hits.push({ kind: 'stok', i: it.ti, x, y, w: it.w, h: l.lh });
+                }
                 x += it.w;
             });
             y += l.lh;
@@ -396,17 +405,17 @@
     const blackout = {
         id: 'blackout',
         name: '涂黑诗',
-        hint: '整段先全部涂黑。点词语：留下/再涂黑；手指在词上划过可连选。',
+        hint: '整段先全部涂黑。点词语：留下/再涂黑；手指划过可连选。',
         defaults: { gran: 'char', fontSize: 3.6, font: 'theme', paper: '#f4efdc', ink: '#111111' },
         controls: [
-            { key: 'gran', label: '点选单位', type: 'select', options: [['char', '逐字'], ['word', '按词(中文自动分词)']], onChange() { S.keep = null; } },
-            { key: 'fontSize', label: '文字大小', type: 'range', min: 1.8, max: 7, step: 0.1 },
-            { key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
-            { key: 'paper', label: '纸色', type: 'color' },
-            { key: 'ink', label: '墨色', type: 'color' },
+            { group: '点选', key: 'gran', label: '点选单位', type: 'select', options: [['char', '逐字'], ['word', '按词(中文自动分词)']], onChange() { S.keep = null; } },
+            { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 1.8, max: 7, step: 0.1 },
+            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
+            { group: '颜色', key: 'paper', label: '纸色', type: 'color' },
+            { group: '颜色', key: 'ink', label: '墨色', type: 'color' },
         ],
         snap() { return JSON.stringify([...(S.keep ? S.keep.set : [])]); },
-        restore(s) { S.keep = { set: new Set(JSON.parse(s)) }; },
+        restore(str) { S.keep = { set: new Set(JSON.parse(str)) }; },
         clear() { S.keep = { set: new Set() }; },
         render(cv, c, P) {
             S.keep ??= { set: new Set() };
@@ -418,23 +427,31 @@
             const items = toks.map((tk, i) => tk.nl ? { nl: true, w: 0 } : { i, t: tk.t, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) });
             const lines = wrap(items, W - M * 2);
             const lh = fs * 1.7;
+            const blockW = Math.max(1, ...lines.map(l => l.w));
             cv.width = W; cv.height = Math.round(M * 2 + lines.length * lh);
             c.fillStyle = P.paper; c.fillRect(0, 0, W, cv.height);
             c.font = `${fs}px ${fam}`; c.textBaseline = 'middle';
             let y = M;
             for (const l of lines) {
-                let x = M;
-                for (const it of l.items) {
-                    if (it.nl) continue;
-                    if (S.keep.set.has(it.i)) {
-                        c.fillStyle = P.ink; c.fillRect(x - 3, y + 2, it.w + 3, lh - 4);
-                        c.fillStyle = P.paper; c.fillRect(x, y + lh * 0.12, it.w - 3, lh * 0.76);
-                        c.fillStyle = P.ink; c.fillText(it.t, x + 2, y + lh / 2);
-                    } else {
-                        c.fillStyle = P.ink; c.fillRect(x - 2, y + 2, it.w + 3, lh - 4);
+                const real = l.items.filter(it => !it.nl);
+                if (real.length) {
+                    c.fillStyle = P.ink; c.fillRect(M, y, blockW, lh);        // 整行连续的黑块
+                    let x = M;
+                    const pos = real.map(it => { const p = { it, x }; x += it.w; return p; });
+                    let a = 0;
+                    while (a < pos.length) {
+                        const kept = S.keep.set.has(pos[a].it.i);
+                        let b = a;
+                        while (b + 1 < pos.length && S.keep.set.has(pos[b + 1].it.i) === kept) b++;
+                        if (kept) {                                             // 连续保留的字连成一块白底，中间没有线
+                            const x0 = pos[a].x, x1 = pos[b].x + pos[b].it.w;
+                            c.fillStyle = P.paper; c.fillRect(x0, y + lh * 0.1, x1 - x0, lh * 0.8);
+                            c.fillStyle = P.ink;
+                            for (let k = a; k <= b; k++) c.fillText(pos[k].it.t, pos[k].x, y + lh / 2);
+                        }
+                        a = b + 1;
                     }
-                    S.hits.push({ kind: 'tok', i: it.i, x, y, w: it.w, h: lh });
-                    x += it.w;
+                    pos.forEach(p => S.hits.push({ kind: 'tok', i: p.it.i, x: p.x, y, w: p.it.w, h: lh }));
                 }
                 y += lh;
             }
@@ -453,15 +470,15 @@
         hint: '点格子：选中/取消；手指划过可连选。标题留空则取选中的文字。',
         defaults: { cols: 4, rows: 4, gap: 8, title: '', sub: 'If there are none, click skip', blue: '#2f77e8' },
         controls: [
-            { key: 'title', label: '大标题(留空=选中文字)', type: 'text' },
-            { key: 'sub', label: '副标题', type: 'text' },
-            { key: 'cols', label: '列数', type: 'range', min: 2, max: 8, step: 1, onChange() { S.cells = null; } },
-            { key: 'rows', label: '行数', type: 'range', min: 2, max: 8, step: 1, onChange() { S.cells = null; } },
-            { key: 'gap', label: '格间距', type: 'range', min: 0, max: 20, step: 1 },
-            { key: 'blue', label: '主色', type: 'color' },
+            { group: '文字', key: 'title', label: '大标题(留空=选中文字)', type: 'text' },
+            { group: '文字', key: 'sub', label: '副标题', type: 'text' },
+            { group: '网格', key: 'cols', label: '列数', type: 'range', min: 2, max: 8, step: 1, onChange() { S.cells = null; } },
+            { group: '网格', key: 'rows', label: '行数', type: 'range', min: 2, max: 8, step: 1, onChange() { S.cells = null; } },
+            { group: '网格', key: 'gap', label: '格间距', type: 'range', min: 0, max: 20, step: 1 },
+            { group: '颜色', key: 'blue', label: '主色', type: 'color' },
         ],
         snap() { return JSON.stringify([...(S.cells ? S.cells.set : [])]); },
-        restore(s) { S.cells = { set: new Set(JSON.parse(s)) }; },
+        restore(str) { S.cells = { set: new Set(JSON.parse(str)) }; },
         clear() { S.cells = { set: new Set() }; },
         render(cv, c, P) {
             S.cells ??= { set: new Set() };
@@ -592,7 +609,8 @@
         S.hits = [];
         try { tpl.render(cv, c2d, P); }
         catch (e) { console.error('[CutoutPoster] render error', e); toast('渲染出错，详见控制台'); }
-        $('#cp_hint').textContent = tpl.hint || '';
+        const hint = typeof tpl.hint === 'function' ? tpl.hint(P) : tpl.hint;
+        $('#cp_hint').textContent = hint || '';
         updateVisibility();
     }
     const ui = {
@@ -608,11 +626,22 @@
             const el = S.ctls[ct.key];
             if (el && el.parentElement) el.parentElement.style.display = (ct.show && !ct.show(P)) ? 'none' : '';
         });
+        (S.cards || []).forEach(card => {
+            const any = [...card.querySelectorAll('.cp_ctl')].some(e => e.style.display !== 'none');
+            card.style.display = any ? '' : 'none';
+        });
     }
     function buildControls() {
         const tpl = curTpl(), P = params(), box = $('#cp_dyn');
-        box.innerHTML = ''; S.ctls = {};
+        box.innerHTML = ''; S.ctls = {}; S.cards = [];
+        let card = null, lastGroup = null;
         tpl.controls.forEach(ct => {
+            const g = ct.group || '参数';
+            if (g !== lastGroup) {
+                card = document.createElement('div'); card.className = 'cp_card';
+                const t = document.createElement('div'); t.className = 'cp_ct'; t.textContent = g;
+                card.append(t); box.append(card); S.cards.push(card); lastGroup = g;
+            }
             const wrap = document.createElement('label');
             wrap.className = 'cp_ctl' + (ct.type === 'checkbox' ? ' cp_inline' : '');
             const span = document.createElement('span');
@@ -642,7 +671,7 @@
             });
             S.ctls[ct.key] = input;
             wrap.append(span, input);
-            box.append(wrap);
+            card.append(wrap);
         });
         updateVisibility();
     }
@@ -672,44 +701,64 @@
     function buildPanel() {
         overlay = document.createElement('div');
         overlay.id = 'cp_overlay';
+        const ic = d => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
         overlay.innerHTML = `
         <div id="cp_panel">
           <div class="cp_head">
-            <b>✂ 文字抽取成图</b>
+            <b>文字抽取成图</b>
             <div class="cp_tools">
-              <button id="cp_undo" class="cp_ic" title="撤销">↩</button>
-              <button id="cp_clear" class="cp_ic" title="清除全部">🗑</button>
-              <button id="cp_export" class="cp_ic" title="导出 PNG">⬇</button>
-              <button id="cp_copy" class="cp_ic" title="复制图片">📋</button>
-              <button id="cp_toggle" class="cp_ic" title="显示/隐藏设置">⚙</button>
-              <button id="cp_close" class="cp_ic" title="关闭">✕</button>
+              <button id="cp_undo" class="cp_ic" title="撤销">${ic('<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>')}</button>
+              <button id="cp_clear" class="cp_ic" title="清除全部">${ic('<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>')}</button>
+              <button id="cp_export" class="cp_ic" title="导出 PNG">${ic('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>')}</button>
+              <button id="cp_copy" class="cp_ic" title="复制图片">${ic('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>')}</button>
+              <button id="cp_toggle" class="cp_ic" title="显示/隐藏设置">${ic('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>')}</button>
+              <button id="cp_close" class="cp_ic" title="关闭">${ic('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>')}</button>
             </div>
           </div>
           <div class="cp_body">
             <div class="cp_preview"><div class="cp_stage"><canvas id="cp_canvas"></canvas></div></div>
             <div class="cp_side">
               <div id="cp_hint"></div>
-              <label class="cp_blk"><span>模板</span><select id="cp_tpl"></select></label>
-              <label class="cp_blk"><span>文字（可直接编辑）</span><textarea id="cp_text" rows="3" placeholder="${SAMPLE}"></textarea></label>
-              <div class="cp_blk"><span>图片</span>
-                <div class="cp_row">
-                  <button id="cp_upload" class="menu_button">上传</button>
-                  <button id="cp_avatar" class="menu_button">角色头像</button>
-                  <button id="cp_bg" class="menu_button">聊天背景</button>
-                </div>
-                <div class="cp_row"><input type="text" id="cp_url" placeholder="图片 URL"><button id="cp_urlgo" class="menu_button">载入</button></div>
+              <div class="cp_tabs">
+                <button data-tab="a" class="on">内容</button>
+                <button data-tab="b">样式</button>
+                <button data-tab="c">更多</button>
               </div>
-              <div id="cp_dyn"></div>
-              <details class="cp_more">
-                <summary>字体 / 预设 / 导入模板</summary>
-                <div class="cp_row"><button id="cp_fontimp" class="menu_button">导入字体文件</button></div>
-                <label class="cp_blk"><span>自己输入字体名（字体选“自己输入”时生效）</span><input type="text" id="cp_customfont" placeholder="例如：LXGW WenKai"></label>
-                <div class="cp_row">
-                  <button id="cp_presetout" class="menu_button">导出预设</button>
-                  <button id="cp_presetin" class="menu_button">导入预设</button>
+              <div class="cp_pane" data-pane="a">
+                <div class="cp_card">
+                  <div class="cp_ct">模板</div>
+                  <select id="cp_tpl"></select>
                 </div>
-                <div class="cp_row"><button id="cp_tplimp" class="menu_button">导入模板脚本(.js)</button></div>
-              </details>
+                <div class="cp_card">
+                  <div class="cp_ct">文字</div>
+                  <textarea id="cp_text" rows="4" placeholder="${SAMPLE}"></textarea>
+                </div>
+                <div class="cp_card">
+                  <div class="cp_ct">图片</div>
+                  <div class="cp_row">
+                    <button id="cp_upload" class="cp_btn">上传</button>
+                    <button id="cp_avatar" class="cp_btn">角色头像</button>
+                    <button id="cp_bg" class="cp_btn">聊天背景</button>
+                  </div>
+                  <div class="cp_row"><input type="text" id="cp_url" placeholder="图片 URL"><button id="cp_urlgo" class="cp_btn">载入</button></div>
+                </div>
+              </div>
+              <div class="cp_pane" data-pane="b" style="display:none"><div id="cp_dyn"></div></div>
+              <div class="cp_pane" data-pane="c" style="display:none">
+                <div class="cp_card">
+                  <div class="cp_ct">字体</div>
+                  <div class="cp_row"><button id="cp_fontimp" class="cp_btn">导入字体文件</button></div>
+                  <label class="cp_ctl"><span>自己输入字体名（字体选“自己输入”时生效）</span><input type="text" id="cp_customfont" placeholder="例如：LXGW WenKai"></label>
+                </div>
+                <div class="cp_card">
+                  <div class="cp_ct">预设与模板</div>
+                  <div class="cp_row">
+                    <button id="cp_presetout" class="cp_btn">导出预设</button>
+                    <button id="cp_presetin" class="cp_btn">导入预设</button>
+                  </div>
+                  <div class="cp_row"><button id="cp_tplimp" class="cp_btn">导入模板脚本(.js)</button></div>
+                </div>
+              </div>
             </div>
           </div>
         </div>`;
@@ -728,7 +777,11 @@
         overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
         $('#cp_close').addEventListener('click', closePanel);
         $('#cp_toggle').addEventListener('click', () => { overlay.classList.toggle('cp_focus'); setTimeout(render, 30); });
-        $('#cp_text').addEventListener('input', e => { S.text = e.target.value; S.keep = null; scheduleRender(); });
+        $('#cp_text').addEventListener('input', e => { S.text = e.target.value; S.keep = null; S.slots = new Set(); scheduleRender(); });
+        overlay.querySelectorAll('.cp_tabs button').forEach(b => b.addEventListener('click', () => {
+            overlay.querySelectorAll('.cp_tabs button').forEach(x => x.classList.toggle('on', x === b));
+            overlay.querySelectorAll('.cp_pane').forEach(p => { p.style.display = p.dataset.pane === b.dataset.tab ? '' : 'none'; });
+        }));
 
         // 图片来源
         $('#cp_upload').addEventListener('click', () => pickFile('image/*', async f => {
@@ -852,7 +905,7 @@
         if (typeof text === 'string' && text.trim()) {
             S.text = text.trim();
             $('#cp_text').value = S.text;
-            S.keep = null;
+            S.keep = null; S.slots = new Set();
         }
         overlay.classList.add('open');
         document.body.style.overflow = 'hidden';
@@ -865,7 +918,7 @@
     function initSelection() {
         const btn = document.createElement('div');
         btn.id = 'cp_float_btn';
-        btn.textContent = '✂ 抽取成图';
+        btn.textContent = '抽取成图';
         document.body.append(btn);
         let lastText = '';
         const hide = () => { btn.style.display = 'none'; };
