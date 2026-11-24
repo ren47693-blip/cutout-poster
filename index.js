@@ -179,6 +179,48 @@
                 c.bezierCurveTo(x - w * 0.1, y + h * 0.55, x + w * 0.05, y - h * 0.05, cx, y + h * 0.28);
                 c.bezierCurveTo(x + w * 0.95, y - h * 0.05, x + w * 1.1, y + h * 0.55, cx, y + h * 0.95);
                 c.closePath(); break;
+            case 'puzzle': {
+                const sz = Math.min(w, h) * 0.65, r = sz * 0.17, d = r * 0.55, k = Math.sqrt(r * r - d * d), a = Math.atan2(d, k);
+                const x0 = cx - sz / 2, y0 = cy - sz / 2, x1 = cx + sz / 2, y1 = cy + sz / 2, PI = Math.PI;
+                c.moveTo(x0, y0); c.lineTo(cx - k, y0);
+                c.arc(cx, y0 - d, r, PI - a, 2 * PI + a, false);
+                c.lineTo(x1, y0); c.lineTo(x1, cy - k);
+                c.arc(x1 + d, cy, r, 1.5 * PI - a, 2.5 * PI + a, false);
+                c.lineTo(x1, y1); c.lineTo(cx + k, y1);
+                c.arc(cx, y1 - d, r, a, PI - a, true);
+                c.lineTo(x0, y1); c.lineTo(x0, cy + k);
+                c.arc(x0 + d, cy, r, a + PI / 2, 1.5 * PI - a, true);
+                c.closePath(); break;
+            }
+            case 'drop': {
+                const r = w / 2, cyc = y + h - r, D = cyc - y, g = Math.acos(Math.min(0.99, r / Math.max(D, r + 1)));
+                c.moveTo(cx, y);
+                c.lineTo(cx + r * Math.cos(-Math.PI / 2 + g), cyc + r * Math.sin(-Math.PI / 2 + g));
+                c.arc(cx, cyc, r, -Math.PI / 2 + g, 1.5 * Math.PI - g, false);
+                c.closePath(); break;
+            }
+            case 'sparkle': {
+                const k = 0.09;
+                c.moveTo(cx, y);
+                c.quadraticCurveTo(cx + w * k, cy - h * k, x + w, cy);
+                c.quadraticCurveTo(cx + w * k, cy + h * k, cx, y + h);
+                c.quadraticCurveTo(cx - w * k, cy + h * k, x, cy);
+                c.quadraticCurveTo(cx - w * k, cy - h * k, cx, y);
+                c.closePath(); break;
+            }
+            case 'bird': {
+                const u = (a, b) => [x + a * w, y + b * h];
+                const mv = p => c.moveTo(p[0], p[1]), ln = p => c.lineTo(p[0], p[1]), q = (p1, p2) => c.quadraticCurveTo(p1[0], p1[1], p2[0], p2[1]);
+                mv(u(1.0, 0.6));
+                q(u(0.93, 0.46), u(0.8, 0.48));
+                q(u(0.55, 0.04), u(0.04, 0.0));
+                q(u(0.34, 0.26), u(0.5, 0.58));
+                q(u(0.32, 0.62), u(0.06, 0.8));
+                ln(u(0.24, 0.88)); ln(u(0.1, 1.0));
+                q(u(0.46, 0.98), u(0.64, 0.8));
+                q(u(0.92, 0.8), u(1.0, 0.6));
+                c.closePath(); break;
+            }
             default: c.rect(x, y, w, h);
         }
     }
@@ -186,12 +228,75 @@
     /* ---------- 运行时状态 ---------- */
     const S = {
         text: '', img: null, imgId: 0, hits: [], geo: null,
-        cut: { holes: [] }, slots: new Set(), keep: null, cells: null,
+        cut: { holes: [] }, sel: -1, slots: new Set(), keep: null, cells: null,
+        tiles: null, grid: null, edges: {}, tl: null, boxes: [], tmpBox: null, det: null, noGuides: false,
+        shapes: [], tmpPath: null, cloze: { order: [] }, srcImg: null,
         drag: null, undo: [], ctls: {},
     };
     const TEMPLATES = {};
     const imgW = im => im.naturalWidth || im.width;
     const imgH = im => im.naturalHeight || im.height;
+
+    /* ---------- 通用绘图/文字小工具 ---------- */
+    function drawCover(c, img, x, y, w, h) {
+        const sc = Math.max(w / imgW(img), h / imgH(img));
+        const sw = w / sc, sh = h / sc;
+        c.drawImage(img, (imgW(img) - sw) / 2, (imgH(img) - sh) / 2, sw, sh, x, y, w, h);
+    }
+    const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+    function textLines(fallback) {
+        const raw = (S.text || '').replace(/\r/g, '').trim() || fallback || SAMPLE;
+        return raw.split('\n').map(t => t.trim());
+    }
+    const unitsOf = t => { t = t.trim(); return /\s/.test(t) ? t.split(/\s+/) : [...t]; };
+    function romanize(n) {
+        let r = '';
+        for (const [v, t] of [[10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']]) while (n >= v) { r += t; n -= v; }
+        return r;
+    }
+    const RATIOS = { '3:2': [3, 2], '16:9': [16, 9], '4:3': [4, 3], '1:1': [1, 1], '3:4': [3, 4], '2:3': [2, 3] };
+    const RATIO_OPTS = [['3:2', '3:2 横'], ['16:9', '16:9 横'], ['4:3', '4:3 横'], ['1:1', '方形'], ['3:4', '3:4 竖'], ['2:3', '2:3 竖']];
+    // 需要先设置 mctx.font；返回按宽度折行后的每行字符串
+    function textBlock(text, maxW) {
+        const spaceW = mctx.measureText(' ').width;
+        const items = tokenize(text, 'char').map(tk => tk.nl ? { nl: true, w: 0 } : { t: tk.t, sp: tk.sp, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) });
+        return wrap(items, maxW).map(l => l.items.filter(i => !i.nl).map(i => i.t + (i.sp ? ' ' : '')).join(''));
+    }
+
+    let noiseCv = null;
+    function applyGrain(c, w, h, amount) {
+        if (!amount) return;
+        if (!noiseCv) {
+            noiseCv = document.createElement('canvas'); noiseCv.width = noiseCv.height = 200;
+            const nc = noiseCv.getContext('2d'), id = nc.createImageData(200, 200);
+            for (let i = 0; i < id.data.length; i += 4) { const v = Math.random() * 255; id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 255; }
+            nc.putImageData(id, 0, 0);
+        }
+        c.save(); c.globalAlpha = Math.min(1, amount / 100 * 0.35); c.globalCompositeOperation = 'overlay';
+        c.fillStyle = c.createPattern(noiseCv, 'repeat'); c.fillRect(0, 0, w, h); c.restore();
+    }
+    function polyPath(c, pts, w, h) {
+        const n = pts.length;
+        c.beginPath();
+        if (n < 3) return;
+        const pt = i => ({ x: pts[i % n].x * w, y: pts[i % n].y * h });
+        const a = pt(0), b = pt(1);
+        c.moveTo((a.x + b.x) / 2, (a.y + b.y) / 2);
+        for (let i = 1; i <= n; i++) { const p = pt(i), q = pt(i + 1); c.quadraticCurveTo(p.x, p.y, (p.x + q.x) / 2, (p.y + q.y) / 2); }
+        c.closePath();
+    }
+    function inPoly(pts, x, y) {
+        let ins = false;
+        for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+            const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
+            if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) ins = !ins;
+        }
+        return ins;
+    }
+    const SAMPLE_CLOZE = '夫天地者，万物之逆旅也；\n光阴者，百代之过客也。\n而浮生若梦，为欢几何？';
+    const SAMPLE_TIMELINE = '5/12  CONCEPT PHOTO #1\n5/15  CONCEPT PHOTO #2\n5/16  CONCEPT PHOTO #3\n\n5/22  TRACKLIST\n\n5/29  ALBUM RELEASE';
+    const SAMPLE_DETECT = 'maybe we are all main characters\njust crossing paths in each others stories';
+    const SAMPLE_BOARD = 'DESIGN AND RESEARCH\nThis design proposal developed out of the practice of making large-scale drawings, models and environments.\nTime-based plan of the proposed process\nSketch development\nModel, restoration hangar\nPortfolio, precedents\nBuilding components booklet\nRelief section';
 
     function makePlaceholder() {
         const cv = document.createElement('canvas');
@@ -213,74 +318,184 @@
     /* =====================================================
      * 模板 1：挖洞置换（全手动）
      * ===================================================== */
-    // 洞只存中心点；大小/形状是全局参数，拖滑杆时所有洞实时变化
+    // 每个洞存：中心点、自己的大小(% 图片宽度)、碎片角度；形状是全局参数
+    const SHAPE_ASPECT = { drop: 1.35, bird: 0.7 };   // 高/宽
+    function shapeRatio(P) {
+        if (P.shape === 'rect' || P.shape === 'ellipse') return 1 / Math.max(0.2, P.aspect);
+        return SHAPE_ASPECT[P.shape] || 1;
+    }
     function holeGeom(P, h, IW, IH) {
-        const w = P.size / 100;
-        const hp = ((P.shape === 'rect' || P.shape === 'ellipse') ? (IW * w) / Math.max(0.2, P.aspect) : IW * w) / IH;
+        const w = (h.size ?? P.size) / 100;
+        const hp = (IW * w * shapeRatio(P)) / IH;
         return {
-            cx: clamp(h.cx, w / 2, 1 - w / 2),
+            cx: clamp(h.cx, Math.min(w / 2, 0.5), Math.max(1 - w / 2, 0.5)),
             cy: clamp(h.cy, Math.min(hp / 2, 0.5), Math.max(1 - hp / 2, 0.5)),
             w, h: hp,
         };
     }
-    function drawFrag(c, P, g, dcx, dcy, dw, dh) {
+    function drawFrag(c, P, g, dcx, dcy, dw, dh, rot) {
         const img = S.img;
         c.save();
-        pathShape(c, P.shape, dcx, dcy, dw, dh);
+        c.translate(dcx, dcy);
+        if (rot) c.rotate(rot * Math.PI / 180);
+        c.save();
+        pathShape(c, P.shape, 0, 0, dw, dh);
         c.clip();
-        c.drawImage(img, (g.cx - g.w / 2) * imgW(img), (g.cy - g.h / 2) * imgH(img), g.w * imgW(img), g.h * imgH(img),
-            dcx - dw / 2, dcy - dh / 2, dw, dh);
+        c.drawImage(img, (g.cx - g.w / 2) * imgW(img), (g.cy - g.h / 2) * imgH(img), g.w * imgW(img), g.h * imgH(img), -dw / 2, -dh / 2, dw, dh);
         c.restore();
-        if (P.border) {
-            pathShape(c, P.shape, dcx, dcy, dw, dh);
-            c.lineWidth = 2; c.strokeStyle = P.fg; c.stroke();
-        }
+        if (P.border) { pathShape(c, P.shape, 0, 0, dw, dh); c.lineWidth = 2; c.strokeStyle = P.fg; c.stroke(); }
+        c.restore();
     }
+    function drawRing(c, P, cx, cy, w, h) {
+        c.save(); c.setLineDash([10, 7]); c.lineWidth = 4; c.strokeStyle = '#3b9bff';
+        pathShape(c, P.shape, cx, cy, w + 12, h + 12); c.stroke(); c.restore();
+    }
+
     const cutout = {
         id: 'cutout',
         name: '挖洞置换',
         hint(P) {
-            return P.layout === 'slots'
-                ? '点图片：挖洞（再点取消）。点文字：在那里放一个槽位（再点取消）。槽位按文字顺序，依次装入先挖的洞。'
-                : '点图片：挖洞（再点取消）。下方的碎片可以拖动。';
+            return '点空白处挖洞；点洞选中（在「样式」里调它的大小、碎片角度），按住洞可拖动位置，再点一下选中的洞删除。'
+                + (P.layout === 'slots' ? '点文字放槽位，槽位按文字顺序装入先挖的洞。' : '图外的碎片可以拖动。');
         },
+        migrate(P) { if (P.layout === 'below') { P.layout = 'panel'; P.side = 'below'; } },
         defaults: {
-            layout: 'below', gran: 'char', shape: 'square', size: 12, aspect: 1.5, lowerPct: 100,
-            bg: '#f1efe6', fg: '#222222', border: false, fontSize: 3.4, font: 'theme',
+            layout: 'panel', side: 'below', arrange: 'mirror', panelPct: 100, framePct: 14, spread: 30, gridCols: 6,
+            glyph: '', fillGlyph: true, fragScale: 100, gran: 'char',
+            shape: 'square', aspect: 1.5, size: 12,
+            bg: '#f1efe6', fg: '#222222', glyphColor: '#ffffff', border: false, fontSize: 3.4, font: 'theme', grain: 0,
         },
         controls: [
-            { group: '版面', key: 'layout', label: '碎片落点', type: 'select', options: [['below', '下方散落'], ['slots', '文字槽位']] },
+            { group: '版面', key: 'layout', label: '碎片放在哪', type: 'select', options: [['panel', '图旁边的空白区'], ['frame', '图外一圈边框里'], ['slots', '文字里（槽位）']] },
+            { group: '版面', key: 'side', label: '空白区位置', type: 'select', options: [['below', '下方'], ['above', '上方'], ['right', '右边'], ['left', '左边']], show: P => P.layout === 'panel' },
+            { group: '版面', key: 'arrange', label: '碎片排列', type: 'select', options: [['mirror', '对应原位置'], ['cluster', '聚拢成一堆'], ['grid', '整齐网格'], ['glyph', '排成一个字']], show: P => P.layout === 'panel' },
+            { group: '版面', key: 'panelPct', label: '空白区大小 %', type: 'range', min: 30, max: 160, step: 5, show: P => P.layout === 'panel' },
+            { group: '版面', key: 'framePct', label: '边框宽度 %', type: 'range', min: 5, max: 35, step: 1, show: P => P.layout === 'frame' },
+            { group: '版面', key: 'spread', label: '聚拢程度 %', type: 'range', min: 5, max: 100, step: 5, show: P => P.layout === 'panel' && P.arrange === 'cluster' },
+            { group: '版面', key: 'gridCols', label: '网格列数', type: 'range', min: 2, max: 12, step: 1, show: P => P.layout === 'panel' && P.arrange === 'grid' },
+            { group: '版面', key: 'glyph', label: '要排成的字（空=取文字第一个字）', type: 'text', show: P => P.layout === 'panel' && P.arrange === 'glyph' },
+            { group: '版面', key: 'fillGlyph', label: '碎片重复，铺满字形', type: 'checkbox', show: P => P.layout === 'panel' && P.arrange === 'glyph' },
+            { group: '版面', key: 'fragScale', label: '碎片缩放 %', type: 'range', min: 30, max: 150, step: 5, show: P => P.layout !== 'slots' },
             { group: '版面', key: 'gran', label: '文字点选单位', type: 'select', options: [['char', '逐字'], ['word', '按词']], show: P => P.layout === 'slots', onChange() { S.slots = new Set(); } },
-            { group: '版面', key: 'lowerPct', label: '下方区域高度 %', type: 'range', min: 40, max: 160, step: 5, show: P => P.layout === 'below' },
-            { group: '形状', key: 'shape', label: '洞的形状', type: 'select', options: [['square', '方形'], ['circle', '圆形'], ['rect', '长方形'], ['ellipse', '椭圆'], ['diamond', '菱形'], ['triangle', '三角'], ['star', '星形'], ['heart', '爱心']] },
-            { group: '形状', key: 'size', label: '洞的大小 %', type: 'range', min: 3, max: 40, step: 1 },
-            { group: '形状', key: 'aspect', label: '长宽比(长方形/椭圆)', type: 'range', min: 0.4, max: 3, step: 0.1 },
+            { group: '形状', key: 'shape', label: '洞的形状', type: 'select', options: [['square', '方形'], ['circle', '圆形'], ['rect', '长方形'], ['ellipse', '椭圆'], ['diamond', '菱形'], ['triangle', '三角'], ['star', '星形'], ['heart', '爱心'], ['puzzle', '拼图'], ['drop', '水滴'], ['sparkle', '四角星光'], ['bird', '小鸟']] },
+            { group: '形状', key: 'aspect', label: '长宽比(长方形/椭圆)', type: 'range', min: 0.4, max: 3, step: 0.1, show: P => P.shape === 'rect' || P.shape === 'ellipse' },
+            { group: '大小与角度', key: 'size', label: '新洞的默认大小 %', type: 'range', min: 3, max: 40, step: 1 },
+            { group: '大小与角度', key: 'selSize', label: '选中的洞：大小 %', type: 'range', min: 2, max: 60, step: 1, show: () => S.sel >= 0,
+              get(P) { const h = S.cut.holes[S.sel]; return h ? (h.size ?? P.size) : undefined; },
+              set(v) { const h = S.cut.holes[S.sel]; if (h) h.size = v; } },
+            { group: '大小与角度', key: 'selRot', label: '选中的碎片：角度', type: 'range', min: -180, max: 180, step: 5, show: () => S.sel >= 0,
+              get() { const h = S.cut.holes[S.sel]; return h ? (h.rot || 0) : undefined; },
+              set(v) { const h = S.cut.holes[S.sel]; if (h) h.rot = v; } },
+            { group: '大小与角度', key: 'delSel', label: '删除选中的洞', type: 'button', show: () => S.sel >= 0, onClick() { if (S.sel >= 0) S.cut.holes.splice(S.sel, 1); S.sel = -1; } },
+            { group: '大小与角度', key: 'allSize', label: '所有洞改成默认大小', type: 'button', onClick(P) { S.cut.holes.forEach(h => { h.size = P.size; }); } },
             { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 1.5, max: 6, step: 0.1, show: P => P.layout === 'slots' },
-            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS, show: P => P.layout === 'slots' },
+            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS, show: P => P.layout === 'slots' || (P.layout === 'panel' && P.arrange === 'glyph') },
             { group: '颜色', key: 'bg', label: '底色/洞色', type: 'color' },
             { group: '颜色', key: 'fg', label: '文字/描边色', type: 'color' },
+            { group: '颜色', key: 'glyphColor', label: '字形颜色', type: 'color', show: P => P.layout === 'panel' && P.arrange === 'glyph' },
             { group: '颜色', key: 'border', label: '碎片描边', type: 'checkbox' },
+            { group: '质感', key: 'grain', label: '纸张颗粒 %', type: 'range', min: 0, max: 100, step: 5 },
         ],
         snap() { return JSON.stringify({ h: S.cut.holes, s: [...S.slots] }); },
-        restore(str) { const d = JSON.parse(str); S.cut.holes = d.h; S.slots = new Set(d.s); },
-        clear() { S.cut.holes = []; S.slots = new Set(); },
+        restore(str) { const d = JSON.parse(str); S.cut.holes = d.h; S.slots = new Set(d.s); S.sel = -1; },
+        clear() { S.cut.holes = []; S.slots = new Set(); S.sel = -1; },
         render(cv, c, P) {
             const img = S.img, holes = S.cut.holes;
-            const W = 1200, IW = W, IH = Math.round(W * imgH(img) / imgW(img));
-            const G = holes.map(h => holeGeom(P, h, IW, IH));
-            if (P.layout === 'slots') return renderSlots(cv, c, P, W, IW, IH, holes, G);
-            const lowerH = Math.round(IH * P.lowerPct / 100);
-            cv.width = W; cv.height = IH + lowerH;
-            c.fillStyle = P.bg; c.fillRect(0, 0, cv.width, cv.height);
-            c.drawImage(img, 0, 0, IW, IH);
-            S.geo = { x: 0, y: 0, w: IW, h: IH };
-            G.forEach(g => { pathShape(c, P.shape, g.cx * IW, g.cy * IH, g.w * IW, g.h * IH); c.fillStyle = P.bg; c.fill(); });
-            G.forEach((g, i) => {
-                const dw = g.w * IW, dh = g.h * IH;
-                const dx = g.cx * IW + (holes[i].ox || 0), dy = IH + g.cy * lowerH + (holes[i].oy || 0);
-                drawFrag(c, P, g, dx, dy, dw, dh);
-                S.hits.push({ kind: 'frag', i, x: dx - dw / 2, y: dy - dh / 2, w: dw, h: dh });
-            });
+            const IW = 1200, IH = Math.round(IW * imgH(img) / imgW(img));
+            if (S.sel >= holes.length) S.sel = -1;
+            if (P.layout === 'slots') {
+                const G0 = holes.map(h => holeGeom(P, h, IW, IH));
+                renderSlots(cv, c, P, IW, IW, IH, holes, G0);
+                applyGrain(c, cv.width, cv.height, P.grain);
+                return;
+            }
+            let W, H, ix = 0, iy = 0, iw = IW, ih = IH, panel;
+            if (P.layout === 'frame') {
+                const m = Math.round(IW * P.framePct / 100);
+                iw = IW - 2 * m; ih = Math.round(iw * imgH(img) / imgW(img));
+                W = IW; H = ih + 2 * m; ix = m; iy = m; panel = { x: 0, y: 0, w: W, h: H };
+            } else if (P.side === 'below' || P.side === 'above') {
+                const ph = Math.round(IH * P.panelPct / 100);
+                W = IW; H = IH + ph; iy = P.side === 'above' ? ph : 0;
+                panel = { x: 0, y: P.side === 'above' ? 0 : IH, w: IW, h: ph };
+            } else {
+                const pw = Math.round(IW * P.panelPct / 100);
+                W = IW + pw; H = IH; ix = P.side === 'left' ? pw : 0;
+                panel = { x: P.side === 'left' ? 0 : IW, y: 0, w: pw, h: IH };
+            }
+            cv.width = W; cv.height = H;
+            c.fillStyle = P.bg; c.fillRect(0, 0, W, H);
+            c.drawImage(img, ix, iy, iw, ih);
+            S.geo = { x: ix, y: iy, w: iw, h: ih };
+            const G = holes.map(h => holeGeom(P, h, iw, ih));
+            G.forEach(g => { pathShape(c, P.shape, ix + g.cx * iw, iy + g.cy * ih, g.w * iw, g.h * ih); c.fillStyle = P.bg; c.fill(); });
+            const fsc = P.fragScale / 100;
+            const sizes = G.map(g => ({ w: g.w * iw * fsc, h: g.h * ih * fsc }));
+            let centers = null;
+            if (P.layout === 'frame') {
+                centers = G.map((g, i) => {
+                    const sd = Math.floor(hash(i * 5 + 2) * 4), al = hash(i * 5 + 3), of = ix * 0.12 + hash(i * 5 + 4) * ix * 0.76;
+                    if (sd === 0) return { x: ix + al * iw, y: of };
+                    if (sd === 1) return { x: ix + al * iw, y: H - of };
+                    if (sd === 2) return { x: of, y: iy + al * ih };
+                    return { x: W - of, y: iy + al * ih };
+                });
+            } else if (P.arrange === 'cluster') {
+                const cx0 = panel.x + panel.w / 2, cy0 = panel.y + panel.h / 2, sp = P.spread / 100;
+                centers = G.map(g => ({ x: cx0 + (g.cx - 0.5) * panel.w * sp, y: cy0 + (g.cy - 0.5) * panel.h * sp }));
+            } else if (P.arrange === 'grid') {
+                const n = G.length, cols = Math.max(1, Math.min(P.gridCols, n || 1));
+                const cell = Math.max(1, ...sizes.map(z => Math.max(z.w, z.h))) * 1.2, rows = Math.ceil(n / cols);
+                const x0 = panel.x + panel.w / 2 - cols * cell / 2 + cell / 2, y0 = panel.y + panel.h / 2 - rows * cell / 2 + cell / 2;
+                centers = G.map((g, i) => ({ x: x0 + (i % cols) * cell, y: y0 + Math.floor(i / cols) * cell }));
+            } else if (P.arrange !== 'glyph') {
+                centers = G.map(g => ({ x: panel.x + g.cx * panel.w, y: panel.y + g.cy * panel.h }));
+            }
+            if (centers) {
+                G.forEach((g, i) => {
+                    const o = holes[i];
+                    const dx = centers[i].x + (o.ox || 0), dy = centers[i].y + (o.oy || 0);
+                    drawFrag(c, P, g, dx, dy, sizes[i].w, sizes[i].h, o.rot || 0);
+                    S.hits.push({ kind: 'frag', i, x: dx - sizes[i].w / 2, y: dy - sizes[i].h / 2, w: sizes[i].w, h: sizes[i].h });
+                });
+                if (!S.noGuides && S.sel >= 0 && G[S.sel]) {
+                    const o = holes[S.sel];
+                    drawRing(c, P, centers[S.sel].x + (o.ox || 0), centers[S.sel].y + (o.oy || 0), sizes[S.sel].w, sizes[S.sel].h);
+                }
+            } else {
+                // 排成一个字：先画字形，再用碎片按网格铺满字形
+                const ch = (P.glyph || '').trim().slice(0, 2) || (S.text || '').trim().slice(0, 1) || '字';
+                const gs = Math.min(panel.w, panel.h) * 0.78, fam = fontFamily(P.font);
+                c.save(); c.fillStyle = P.glyphColor; c.font = `bold ${gs}px ${fam}`; c.textAlign = 'center'; c.textBaseline = 'middle';
+                c.fillText(ch, panel.x + panel.w / 2, panel.y + panel.h / 2); c.restore();
+                if (holes.length) {
+                    const sc = 0.25, mk = document.createElement('canvas');
+                    mk.width = Math.ceil(panel.w * sc); mk.height = Math.ceil(panel.h * sc);
+                    const mc = mk.getContext('2d');
+                    mc.font = `bold ${gs * sc}px ${fam}`; mc.textAlign = 'center'; mc.textBaseline = 'middle'; mc.fillStyle = '#000';
+                    mc.fillText(ch, mk.width / 2, mk.height / 2);
+                    let md = null;
+                    try { md = mc.getImageData(0, 0, mk.width, mk.height).data; } catch (e) { md = null; }
+                    const cell = Math.max(10, sizes.reduce((s0, z) => s0 + Math.max(z.w, z.h), 0) / sizes.length * 1.05);
+                    const spots = [];
+                    for (let yy = panel.y + cell / 2; yy < panel.y + panel.h; yy += cell) {
+                        for (let xx = panel.x + cell / 2; xx < panel.x + panel.w; xx += cell) {
+                            const px = Math.floor((xx - panel.x) * sc), py = Math.floor((yy - panel.y) * sc);
+                            if (!md || md[(py * mk.width + px) * 4 + 3] > 100) spots.push({ x: xx, y: yy });
+                        }
+                    }
+                    const n = holes.length, take = P.fillGlyph ? spots.length : Math.min(n, spots.length);
+                    for (let k = 0; k < take; k++) {
+                        const i = k % n, z = sizes[i], f = cell * 0.92 / Math.max(z.w, z.h);
+                        drawFrag(c, P, G[i], spots[k].x, spots[k].y, z.w * f, z.h * f, holes[i].rot || 0);
+                    }
+                }
+            }
+            if (!S.noGuides && S.sel >= 0 && G[S.sel]) {
+                const g = G[S.sel];
+                drawRing(c, P, ix + g.cx * iw, iy + g.cy * ih, g.w * iw, g.h * ih);
+            }
+            applyGrain(c, W, H, P.grain);
         },
         onDown(x, y, P) {
             const inside = h => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h;
@@ -288,7 +503,8 @@
                 const h = S.hits[k];
                 if (h.kind === 'frag' && inside(h)) {
                     const ho = S.cut.holes[h.i];
-                    S.drag = { i: h.i, sx: x, sy: y, ox: ho.ox || 0, oy: ho.oy || 0 };
+                    S.sel = h.i;
+                    S.drag = { kind: 'frag', i: h.i, sx: x, sy: y, ox: ho.ox || 0, oy: ho.oy || 0 };
                     return true;
                 }
             }
@@ -300,23 +516,39 @@
             if (!g || x < g.x || x > g.x + g.w || y < g.y || y > g.y + g.h) return false;
             const fx = (x - g.x) / g.w, fy = (y - g.y) / g.h;
             const holes = S.cut.holes;
-            const hit = holes.findIndex(h => {
-                const q = holeGeom(P, h, g.w, g.h);
-                return Math.abs(fx - q.cx) <= q.w / 2 && Math.abs(fy - q.cy) <= q.h / 2;
-            });
-            if (hit >= 0) holes.splice(hit, 1);
-            else holes.push({ cx: fx, cy: fy, ox: 0, oy: 0 });
+            let hit = -1;
+            for (let k = holes.length - 1; k >= 0; k--) {
+                const q = holeGeom(P, holes[k], g.w, g.h);
+                if (Math.abs(fx - q.cx) <= q.w / 2 && Math.abs(fy - q.cy) <= q.h / 2) { hit = k; break; }
+            }
+            if (hit >= 0) {
+                S.drag = { kind: 'hole', i: hit, sx: x, sy: y, cx0: holes[hit].cx, cy0: holes[hit].cy, moved: false, was: S.sel === hit };
+                S.sel = hit;
+                return true;
+            }
+            holes.push({ cx: fx, cy: fy, ox: 0, oy: 0, rot: 0, size: P.size });
+            S.sel = holes.length - 1;
             return true;
         },
         onMove(x, y) {
-            if (!S.drag || S.drag.i === undefined) return false;
-            const ho = S.cut.holes[S.drag.i];
+            const d = S.drag;
+            if (!d) return false;
+            const ho = S.cut.holes[d.i];
             if (!ho) return false;
-            ho.ox = S.drag.ox + (x - S.drag.sx);
-            ho.oy = S.drag.oy + (y - S.drag.sy);
-            return true;
+            if (d.kind === 'frag') { ho.ox = d.ox + (x - d.sx); ho.oy = d.oy + (y - d.sy); return true; }
+            if (d.kind === 'hole') {
+                const g = S.geo;
+                if (Math.hypot(x - d.sx, y - d.sy) > 6) d.moved = true;
+                if (d.moved && g) { ho.cx = clamp(d.cx0 + (x - d.sx) / g.w, 0, 1); ho.cy = clamp(d.cy0 + (y - d.sy) / g.h, 0, 1); }
+                return true;
+            }
+            return false;
         },
-        onUp() { S.drag = null; },
+        onUp() {
+            const d = S.drag;
+            if (d && d.kind === 'hole' && !d.moved && d.was) { S.cut.holes.splice(d.i, 1); S.sel = -1; }
+            S.drag = null;
+        },
     };
 
     function renderSlots(cv, c, P, W, IW, IH, holes, G) {
@@ -329,7 +561,7 @@
             toks.push(Object.assign({}, t, { ti: i }));
             if (!t.slot && !t.nl && S.slots.has(i)) toks.push({ t: '{ }', slot: true, sp: true, ti: -1, after: i });
         });
-        const spaceW = mctx.measureText(' ').width, braceW = mctx.measureText('{').width;
+        const spaceW = mctx.measureText(' ').width;
         let slotI = 0;
         const items = toks.map(tk => {
             if (tk.nl) return { nl: true, w: 0 };
@@ -338,7 +570,7 @@
                 let fh = fs * 2.4, fw = g ? fh * (g.w * IW) / (g.h * IH) : fh * 1.4;
                 const cap = W * 0.28;
                 if (fw > cap) { fw = cap; fh = g ? fw * (g.h * IH) / (g.w * IW) : fw / 1.4; }
-                return { slot: true, i, fw, fh, after: tk.after, w: braceW * 2 + fw + fs * 0.5 + spaceW };
+                return { slot: true, i, fw, fh, after: tk.after, w: fw + fs * 0.4 + spaceW * 0.5 };
             }
             return { t: tk.t, ti: tk.ti, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) };
         });
@@ -348,12 +580,13 @@
             l.lh = Math.max(fs * 1.9, mf ? mf + fs * 0.6 : 0);
         });
         const pad = fs * 2.5;
-        const textH = Math.round(pad * 2 + lines.reduce((s, l) => s + l.lh, 0));
+        const textH = Math.round(pad * 2 + lines.reduce((s0, l) => s0 + l.lh, 0));
         cv.width = W; cv.height = textH + IH;
         c.fillStyle = P.bg; c.fillRect(0, 0, W, cv.height);
         c.drawImage(S.img, 0, textH, IW, IH);
         S.geo = { x: 0, y: textH, w: IW, h: IH };
         G.forEach(g => { pathShape(c, P.shape, g.cx * IW, textH + g.cy * IH, g.w * IW, g.h * IH); c.fillStyle = P.bg; c.fill(); });
+        if (!S.noGuides && S.sel >= 0 && G[S.sel]) { const g = G[S.sel]; drawRing(c, P, g.cx * IW, textH + g.cy * IH, g.w * IW, g.h * IH); }
         c.font = `${fs}px ${fam}`; c.textBaseline = 'middle'; c.textAlign = 'left';
         let y = pad;
         lines.forEach(l => {
@@ -362,14 +595,12 @@
             l.items.forEach(it => {
                 if (it.nl) return;
                 if (it.slot) {
-                    c.fillStyle = P.fg; c.fillText('{', x, cy);
-                    const fx = x + braceW + fs * 0.25, g = G[it.i];
-                    if (g) drawFrag(c, P, g, fx + it.fw / 2, cy, it.fw, it.fh);
-                    else {
+                    const fx = x + fs * 0.2, g = G[it.i];
+                    if (g) drawFrag(c, P, g, fx + it.fw / 2, cy, it.fw, it.fh, holes[it.i].rot || 0);
+                    else if (!S.noGuides) {
                         c.save(); c.setLineDash([6, 5]); c.strokeStyle = P.fg;
                         c.strokeRect(fx, cy - it.fh / 2, it.fw, it.fh); c.restore();
                     }
-                    c.fillStyle = P.fg; c.fillText('}', fx + it.fw + fs * 0.25, cy);
                     if (it.after !== undefined) S.hits.push({ kind: 'sslot', i: it.after, x, y, w: it.w, h: l.lh });
                 } else {
                     c.fillStyle = P.fg; c.fillText(it.t, x, cy);
@@ -405,7 +636,7 @@
     const blackout = {
         id: 'blackout',
         name: '涂黑诗',
-        hint: '整段先全部涂黑。点词语：留下/再涂黑；手指划过可连选。',
+        hint: '点词语：留下/再涂黑；手指划过可连选。黑块只出现在留字的范围内，上下没留字的行显示成淡灰色（仅供点选，导出时不会出现）。',
         defaults: { gran: 'char', fontSize: 3.6, font: 'theme', paper: '#f4efdc', ink: '#111111' },
         controls: [
             { group: '点选', key: 'gran', label: '点选单位', type: 'select', options: [['char', '逐字'], ['word', '按词(中文自动分词)']], onChange() { S.keep = null; } },
@@ -414,6 +645,8 @@
             { group: '颜色', key: 'paper', label: '纸色', type: 'color' },
             { group: '颜色', key: 'ink', label: '墨色', type: 'color' },
         ],
+        exportOk() { return !!(S.keep && S.keep.set.size); },
+        exportMsg: '还没有留下任何字，先点几个词吧',
         snap() { return JSON.stringify([...(S.keep ? S.keep.set : [])]); },
         restore(str) { S.keep = { set: new Set(JSON.parse(str)) }; },
         clear() { S.keep = { set: new Set() }; },
@@ -427,33 +660,41 @@
             const items = toks.map((tk, i) => tk.nl ? { nl: true, w: 0 } : { i, t: tk.t, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) });
             const lines = wrap(items, W - M * 2);
             const lh = fs * 1.7;
-            const blockW = Math.max(1, ...lines.map(l => l.w));
-            cv.width = W; cv.height = Math.round(M * 2 + lines.length * lh);
+            const hasKept = lines.map(l => l.items.some(it => !it.nl && S.keep.set.has(it.i)));
+            const f = hasKept.indexOf(true), e = hasKept.lastIndexOf(true), any = f >= 0;
+            const guides = !S.noGuides;
+            const from = (any && !guides) ? f : 0;
+            const to = (any && !guides) ? e : lines.length - 1;
+            const rows = !any && !guides ? 1 : to - from + 1;
+            const blockLines = any ? lines.slice(f, e + 1) : lines;
+            const blockW = Math.max(1, ...blockLines.map(l => l.w));
+            cv.width = W; cv.height = Math.round(M * 2 + rows * lh);
             c.fillStyle = P.paper; c.fillRect(0, 0, W, cv.height);
+            if (any) { c.fillStyle = P.ink; c.fillRect(M, M + (f - from) * lh, blockW, (e - f + 1) * lh); }   // 一整块，没有缝
             c.font = `${fs}px ${fam}`; c.textBaseline = 'middle';
-            let y = M;
-            for (const l of lines) {
-                const real = l.items.filter(it => !it.nl);
-                if (real.length) {
-                    c.fillStyle = P.ink; c.fillRect(M, y, blockW, lh);        // 整行连续的黑块
-                    let x = M;
-                    const pos = real.map(it => { const p = { it, x }; x += it.w; return p; });
-                    let a = 0;
-                    while (a < pos.length) {
-                        const kept = S.keep.set.has(pos[a].it.i);
-                        let b = a;
-                        while (b + 1 < pos.length && S.keep.set.has(pos[b + 1].it.i) === kept) b++;
-                        if (kept) {                                             // 连续保留的字连成一块白底，中间没有线
-                            const x0 = pos[a].x, x1 = pos[b].x + pos[b].it.w;
-                            c.fillStyle = P.paper; c.fillRect(x0, y + lh * 0.1, x1 - x0, lh * 0.8);
-                            c.fillStyle = P.ink;
-                            for (let k = a; k <= b; k++) c.fillText(pos[k].it.t, pos[k].x, y + lh / 2);
-                        }
-                        a = b + 1;
+            for (let li = from; li <= to && li < lines.length; li++) {
+                const y = M + (li - from) * lh;
+                const inBlock = any && li >= f && li <= e;
+                const real = lines[li].items.filter(it => !it.nl);
+                let x = M;
+                const pos = real.map(it => { const p = { it, x }; x += it.w; return p; });
+                let a = 0;
+                while (a < pos.length) {
+                    const kept = S.keep.set.has(pos[a].it.i);
+                    let b = a;
+                    while (b + 1 < pos.length && S.keep.set.has(pos[b + 1].it.i) === kept) b++;
+                    if (kept) {
+                        const x0 = pos[a].x, x1 = pos[b].x + pos[b].it.w;
+                        c.fillStyle = P.paper; c.fillRect(x0, y + lh * 0.1, x1 - x0, lh * 0.8);
+                        c.fillStyle = P.ink;
+                        for (let k = a; k <= b; k++) c.fillText(pos[k].it.t, pos[k].x, y + lh / 2);
+                    } else if (!inBlock && guides) {
+                        c.fillStyle = 'rgba(120,120,120,.55)';
+                        for (let k = a; k <= b; k++) c.fillText(pos[k].it.t, pos[k].x, y + lh / 2);
                     }
-                    pos.forEach(p => S.hits.push({ kind: 'tok', i: p.it.i, x: p.x, y, w: p.it.w, h: lh }));
+                    a = b + 1;
                 }
-                y += lh;
+                pos.forEach(p => S.hits.push({ kind: 'tok', i: p.it.i, x: p.x, y, w: p.it.w, h: lh }));
             }
         },
         onDown(x, y) { S.keep ??= { set: new Set() }; return paintDown('tok', S.keep.set, x, y); },
@@ -536,12 +777,696 @@
         onUp() { S.drag = null; },
     };
 
+
+    /* =====================================================
+     * 模板 4：色块替换（涂抹方块，左右对照）
+     * ===================================================== */
+    function tileAt(x, y) {
+        const g = S.grid;
+        if (!g) return null;
+        for (const px of g.xs) {
+            if (x >= px && x < px + g.PW && y >= 0 && y < g.PH) {
+                return { cc: Math.min(g.cols - 1, Math.floor((x - px) / g.cell)), r: Math.min(g.rows - 1, Math.floor(y / g.cell)) };
+            }
+        }
+        return null;
+    }
+    function tileBrush(pos, val, br) {
+        const g = S.grid, set = S.tiles.set, rad = Math.max(0, br - 1);
+        for (let dr = -rad; dr <= rad; dr++) {
+            for (let dc = -rad; dc <= rad; dc++) {
+                if (dr * dr + dc * dc > rad * rad + rad * 0.5) continue;
+                const r = pos.r + dr, cc = pos.cc + dc;
+                if (r < 0 || r >= g.rows || cc < 0 || cc >= g.cols) continue;
+                val ? set.add(r * g.cols + cc) : set.delete(r * g.cols + cc);
+            }
+        }
+    }
+    const tiles = {
+        id: 'tiles',
+        name: '色块替换',
+        hint: '在图上涂抹：被涂到的方块换成色块。左右对照时，右边是反过来的效果。',
+        defaults: { layout: 'both', cols: 22, brush: 2, jitter: 30, color: '#e0262e', tileText: '', tileTextColor: '#1a1a1a', bg: '#ffffff', fg: '#222222', caption: false, fontSize: 2.6, font: 'theme', grain: 0 },
+        controls: [
+            { group: '版面', key: 'layout', label: '显示', type: 'select', options: [['both', '左右对照'], ['covered', '只要盖住的'], ['revealed', '只要露出的']] },
+            { group: '色块', key: 'cols', label: '方块数量(列)', type: 'range', min: 8, max: 48, step: 1 },
+            { group: '色块', key: 'brush', label: '画笔大小', type: 'range', min: 1, max: 6, step: 1 },
+            { group: '色块', key: 'jitter', label: '错位程度 %', type: 'range', min: 0, max: 100, step: 5 },
+            { group: '色块', key: 'tileText', label: '色块上写的字（可空）', type: 'text' },
+            { group: '选区', key: 'all', label: '全部选中', type: 'button', onClick() { const g = S.grid; if (g) for (let i = 0; i < g.rows * g.cols; i++) S.tiles.set.add(i); } },
+            { group: '选区', key: 'inv', label: '反选', type: 'button', onClick() { const g = S.grid; if (!g) return; const n = new Set(); for (let i = 0; i < g.rows * g.cols; i++) if (!S.tiles.set.has(i)) n.add(i); S.tiles.set = n; } },
+            { group: '文字', key: 'caption', label: '在图下方显示文字', type: 'checkbox' },
+            { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 1.2, max: 5, step: 0.1, show: P => P.caption },
+            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS, show: P => P.caption },
+            { group: '颜色', key: 'color', label: '色块颜色', type: 'color' },
+            { group: '颜色', key: 'tileTextColor', label: '色块文字色', type: 'color', show: P => !!P.tileText },
+            { group: '质感', key: 'grain', label: '纸张颗粒 %', type: 'range', min: 0, max: 100, step: 5 },
+            { group: '颜色', key: 'bg', label: '背景色', type: 'color' },
+            { group: '颜色', key: 'fg', label: '文字颜色', type: 'color', show: P => P.caption },
+        ],
+        snap() { return JSON.stringify([...(S.tiles ? S.tiles.set : [])]); },
+        restore(str) { S.tiles = { set: new Set(JSON.parse(str)), sig: S.tilesSig }; },
+        clear() { S.tiles = { set: new Set(), sig: S.tilesSig }; },
+        render(cv, c, P) {
+            const img = S.img, W = 1200, gap = 24;
+            const two = P.layout === 'both', PW = two ? (W - gap) / 2 : W, PH = Math.round(PW * imgH(img) / imgW(img));
+            const cols = P.cols, cell = PW / cols, rows = Math.ceil(PH / cell);
+            const sig = S.imgId + '|' + cols;
+            S.tilesSig = sig;
+            if (!S.tiles || S.tiles.sig !== sig) S.tiles = { set: new Set(), sig };
+            const fs = Math.round(W * P.fontSize / 100), fam = fontFamily(P.font);
+            let capLines = [], capH = 0;
+            if (P.caption) {
+                mctx.font = `${fs}px ${fam}`;
+                capLines = textBlock((S.text || '').trim() || SAMPLE, W * 0.9);
+                capH = Math.round(capLines.length * fs * 1.6 + fs * 2);
+            }
+            cv.width = W; cv.height = PH + capH;
+            c.fillStyle = P.bg; c.fillRect(0, 0, cv.width, cv.height);
+            const panels = two ? [{ x: 0, type: 'covered' }, { x: PW + gap, type: 'revealed' }] : [{ x: 0, type: P.layout }];
+            S.grid = { cols, rows, cell, PW, PH, xs: panels.map(p => p.x) };
+            const j = P.jitter / 100;
+            panels.forEach(p => {
+                c.save(); c.beginPath(); c.rect(p.x, 0, PW, PH); c.clip();
+                for (let r = 0; r < rows; r++) {
+                    for (let cc = 0; cc < cols; cc++) {
+                        const idx = r * cols + cc, sel = S.tiles.set.has(idx);
+                        const red = p.type === 'covered' ? sel : !sel;
+                        const ox = (hash(idx * 3 + 1) - 0.5) * cell * j * 0.8, oy = (hash(idx * 3 + 2) - 0.5) * cell * j * 0.8;
+                        const rot = (hash(idx * 3 + 3) - 0.5) * j * 0.25;
+                        c.save();
+                        c.translate(p.x + cc * cell + cell / 2 + ox, r * cell + cell / 2 + oy);
+                        c.rotate(rot);
+                        if (red) {
+                            c.fillStyle = P.color; c.fillRect(-cell / 2 - 0.5, -cell / 2 - 0.5, cell + 1, cell + 1);
+                            if (P.tileText) { c.fillStyle = P.tileTextColor; c.font = `bold ${cell * 0.32}px ${fontFamily(P.font)}`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(P.tileText, 0, 0, cell * 0.92); }
+                        }
+                        else c.drawImage(img, (cc * cell / PW) * imgW(img), (r * cell / PH) * imgH(img), (cell / PW) * imgW(img), (cell / PH) * imgH(img), -cell / 2 - 0.5, -cell / 2 - 0.5, cell + 1, cell + 1);
+                        c.restore();
+                    }
+                }
+                c.restore();
+            });
+            if (P.caption) {
+                c.font = `${fs}px ${fam}`; c.fillStyle = P.fg; c.textAlign = 'center'; c.textBaseline = 'middle';
+                capLines.forEach((t, i) => c.fillText(t, W / 2, PH + fs * 1.6 + i * fs * 1.6));
+                c.textAlign = 'left';
+            }
+            applyGrain(c, cv.width, cv.height, P.grain);
+        },
+        onDown(x, y, P) {
+            const pos = tileAt(x, y);
+            if (!pos) return false;
+            const val = !S.tiles.set.has(pos.r * S.grid.cols + pos.cc);
+            tileBrush(pos, val, P.brush);
+            S.drag = { tiles: true, val };
+            return true;
+        },
+        onMove(x, y, P) {
+            if (!S.drag || !S.drag.tiles) return false;
+            const pos = tileAt(x, y);
+            if (!pos) return false;
+            tileBrush(pos, S.drag.val, P.brush);
+            return true;
+        },
+        onUp() { S.drag = null; },
+    };
+
+    /* =====================================================
+     * 模板 5：文字塑形（文字沿着画面里的暗/亮区域排布）
+     * ===================================================== */
+    const shape = {
+        id: 'shape',
+        name: '文字塑形',
+        hint: '文字沿着画面里「暗色」的区域排布，亮色区域留空。在图上点一下，可设置文字区域的左边界。',
+        defaults: { zone: 40, thr: 140, invert: false, align: 'justify', fontSize: 2.3, lineGap: 1.3, upper: true, font: 'theme', color: '#f3dcc8', caption: '', dim: 10, frame: 60, frameColor: '#000000', grain: 0 },
+        controls: [
+            { group: '排布', key: 'zone', label: '文字区域左边界 %', type: 'range', min: 0, max: 95, step: 1 },
+            { group: '排布', key: 'thr', label: '亮度阈值', type: 'range', min: 20, max: 240, step: 1 },
+            { group: '排布', key: 'invert', label: '反转（改在亮色区排字）', type: 'checkbox' },
+            { group: '排布', key: 'align', label: '对齐方式', type: 'select', options: [['justify', '两端撑满'], ['left', '靠左'], ['right', '靠右'], ['center', '居中']] },
+            { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 1.2, max: 5, step: 0.1 },
+            { group: '文字', key: 'lineGap', label: '行距', type: 'range', min: 1, max: 2, step: 0.05 },
+            { group: '文字', key: 'upper', label: '英文转大写', type: 'checkbox' },
+            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
+            { group: '文字', key: 'caption', label: '左上角小标题（空格分词，逐行错开）', type: 'text' },
+            { group: '画面', key: 'dim', label: '压暗图片 %', type: 'range', min: 0, max: 70, step: 1 },
+            { group: '画面', key: 'frame', label: '边框宽度', type: 'range', min: 0, max: 150, step: 2 },
+            { group: '颜色', key: 'color', label: '文字颜色', type: 'color' },
+            { group: '颜色', key: 'frameColor', label: '边框颜色', type: 'color' },
+            { group: '质感', key: 'grain', label: '颗粒感 %', type: 'range', min: 0, max: 100, step: 5 },
+        ],
+        render(cv, c, P) {
+            const img = S.img, IW = 1200, IH = Math.round(IW * imgH(img) / imgW(img)), F = P.frame;
+            cv.width = IW + F * 2; cv.height = IH + F * 2;
+            c.fillStyle = P.frameColor; c.fillRect(0, 0, cv.width, cv.height);
+            c.drawImage(img, F, F, IW, IH);
+            if (P.dim > 0) { c.fillStyle = `rgba(0,0,0,${P.dim / 100})`; c.fillRect(F, F, IW, IH); }
+            let data = null;
+            try {
+                const t = document.createElement('canvas'); t.width = IW; t.height = IH;
+                const tc = t.getContext('2d'); tc.drawImage(img, 0, 0, IW, IH);
+                data = tc.getImageData(0, 0, IW, IH).data;
+            } catch (e) { data = null; }
+            const fam = fontFamily(P.font), fs = Math.round(IW * P.fontSize / 100), lh = fs * P.lineGap;
+            c.font = `bold ${fs}px ${fam}`; mctx.font = c.font;
+            c.fillStyle = P.color; c.textBaseline = 'middle'; c.textAlign = 'left';
+            const raw = ((S.text || '').trim() || SAMPLE).replace(/\s*\n\s*/g, ' ');
+            const hasSp = /\s/.test(raw);
+            let seq = hasSp ? raw.split(/\s+/) : [...raw];
+            if (P.upper) seq = seq.map(w => w.toUpperCase());
+            const spaceW = hasSp ? mctx.measureText(' ').width : 0;
+            const widths = seq.map(w => mctx.measureText(w).width);
+            const zoneX = Math.floor(IW * P.zone / 100);
+            const ok = (x, y) => {
+                if (!data) return true;
+                const i = ((y | 0) * IW + (x | 0)) * 4;
+                const l = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+                return P.invert ? l >= P.thr : l <= P.thr;
+            };
+            let cursor = 0;
+            for (let y = 0; y + lh <= IH; y += lh) {
+                const ys = [y + lh * 0.2, y + lh * 0.5, y + lh * 0.8].map(v => clamp(v, 0, IH - 1));
+                let best = null, start = -1, gap = 0, last = -1;
+                const take = () => { const seg = { a: start, b: last + 4 }; if (!best || seg.b - seg.a > best.b - best.a) best = seg; };
+                for (let x = zoneX; x < IW; x += 4) {
+                    if (ys.every(yy => ok(x, yy))) { if (start < 0) start = x; last = x; gap = 0; }
+                    else if (start >= 0 && ++gap > 2) { take(); start = -1; gap = 0; }
+                }
+                if (start >= 0) take();
+                if (!best) continue;
+                const avail = best.b - best.a - fs * 0.2;
+                if (avail < fs * 2) continue;
+                const picks = [];
+                let sum = 0;
+                while (picks.length < 80) {
+                    const k = (cursor + picks.length) % seq.length;
+                    const add = (picks.length ? spaceW : 0) + widths[k];
+                    if (sum + add > avail) break;
+                    sum += add; picks.push(k);
+                }
+                if (!picks.length) continue;
+                cursor = (cursor + picks.length) % seq.length;
+                const total = picks.reduce((s, k) => s + widths[k], 0);
+                let gapW = spaceW, x0 = best.a + fs * 0.1;
+                if (P.align === 'justify' && picks.length > 1) gapW = (avail - total) / (picks.length - 1);
+                else {
+                    const used = total + gapW * (picks.length - 1);
+                    if (P.align === 'right') x0 = best.b - fs * 0.1 - used;
+                    else if (P.align === 'center') x0 = best.a + (avail - used) / 2;
+                }
+                let x = x0;
+                picks.forEach(k => { c.fillText(seq[k], F + x, F + y + lh / 2); x += widths[k] + gapW; });
+            }
+            if (P.caption.trim()) {
+                const cf = Math.round(IW * 0.016);
+                c.font = `bold ${cf}px ${fam}`;
+                P.caption.trim().split(/\s+/).forEach((w, i) => c.fillText(P.upper ? w.toUpperCase() : w, F + IW * 0.07 + i * IW * 0.035, F + IH * 0.1 + i * cf * 1.5));
+            }
+            applyGrain(c, cv.width, cv.height, P.grain);
+        },
+        onDown(x, y, P, ui) { ui.setParam('zone', Math.round(clamp((x - P.frame) / 1200 * 100, 0, 95))); S.drag = { zone: true }; return true; },
+        onMove(x, y, P, ui) {
+            if (!S.drag || !S.drag.zone) return false;
+            ui.setParam('zone', Math.round(clamp((x - P.frame) / 1200 * 100, 0, 95)));
+            return true;
+        },
+        onUp() { S.drag = null; },
+    };
+
+    /* =====================================================
+     * 模板 6：切边时间表
+     * ===================================================== */
+    const timeline = {
+        id: 'timeline',
+        name: '切边时间表',
+        hint: '每一行文字占一个色块，空行 = 空白色块。在图上左右拖动，可调整那一行切进画面的深度。',
+        defaults: { ratio: '3:2', bands: 20, startBand: 1, jag: 50, fontSize: 1.7, font: 'theme', title: '', footer: '', panel: '#bfc0b8', ink: '#111111', grain: 0 },
+        controls: [
+            { group: '版面', key: 'ratio', label: '画面比例', type: 'select', options: RATIO_OPTS },
+            { group: '版面', key: 'bands', label: '色块行数', type: 'range', min: 8, max: 40, step: 1 },
+            { group: '版面', key: 'startBand', label: '文字从第几行开始', type: 'range', min: 0, max: 12, step: 1 },
+            { group: '版面', key: 'jag', label: '默认错落程度', type: 'range', min: 0, max: 100, step: 5 },
+            { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 1, max: 3.5, step: 0.1 },
+            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
+            { group: '文字', key: 'title', label: '右上角大标题', type: 'text' },
+            { group: '文字', key: 'footer', label: '右下角小字（换行用 / ）', type: 'text' },
+            { group: '颜色', key: 'panel', label: '色块颜色', type: 'color' },
+            { group: '颜色', key: 'ink', label: '文字颜色', type: 'color' },
+            { group: '质感', key: 'grain', label: '颗粒感 %', type: 'range', min: 0, max: 100, step: 5 },
+        ],
+        snap() { return JSON.stringify(S.edges); },
+        restore(str) { S.edges = JSON.parse(str); },
+        clear() { S.edges = {}; },
+        render(cv, c, P) {
+            const [rw, rh] = RATIOS[P.ratio] || [3, 2], W = 1200, H = Math.round(W * rh / rw);
+            cv.width = W; cv.height = H;
+            drawCover(c, S.img, 0, 0, W, H);
+            const nb = P.bands, bh = H / nb, fs = Math.round(W * P.fontSize / 100), fam = fontFamily(P.font);
+            const lines = textLines(SAMPLE_TIMELINE);
+            const padX = fs * 0.9;
+            S.tl = { bh, nb, W };
+            c.textBaseline = 'middle'; c.textAlign = 'left';
+            for (let b = 0; b < nb; b++) {
+                const li = b - P.startBand;
+                const txt = (li >= 0 && li < lines.length) ? lines[li] : '';
+                const parts = txt ? txt.split(/\s{2,}|\t/) : [];
+                let w1 = 0, w2 = 0;
+                const colGap = fs * 1.2;
+                if (txt) {
+                    mctx.font = `bold ${fs}px ${fam}`; w1 = mctx.measureText(parts[0]).width;
+                    if (parts.length > 1) { mctx.font = `${fs}px ${fam}`; w2 = mctx.measureText(parts.slice(1).join(' ')).width; }
+                }
+                const tw = w1 + (parts.length > 1 ? colGap + w2 : 0);
+                let edge = W * clamp(0.5 + P.jag / 100 * 0.2 * (hash(b + 1) * 2 - 1), 0.1, 0.92);
+                if (S.edges[b] !== undefined) edge = S.edges[b] * W;
+                if (txt) edge = Math.min(edge, W - tw - padX * 2 - W * 0.02);
+                c.fillStyle = P.panel;
+                c.fillRect(Math.round(edge), Math.floor(b * bh), W - Math.round(edge) + 1, Math.ceil(bh) + 1);
+                if (txt) {
+                    c.fillStyle = P.ink;
+                    c.font = `bold ${fs}px ${fam}`; c.fillText(parts[0], edge + padX, b * bh + bh / 2);
+                    if (parts.length > 1) { c.font = `${fs}px ${fam}`; c.fillText(parts.slice(1).join(' '), edge + padX + w1 + colGap, b * bh + bh / 2); }
+                }
+            }
+            if (P.title.trim()) {
+                const tf = Math.round(W * 0.05);
+                c.font = `900 ${tf}px ${fam}`;
+                const tw = c.measureText(P.title).width;
+                c.fillStyle = P.panel; c.fillRect(W - tw - W * 0.06, 0, tw + W * 0.06, tf * 1.6);
+                c.fillStyle = P.ink; c.textAlign = 'right'; c.fillText(P.title, W - W * 0.03, tf * 0.95); c.textAlign = 'left';
+            }
+            if (P.footer.trim()) {
+                const ff = Math.round(W * 0.012), fl = P.footer.split('/').map(t => t.trim());
+                c.font = `bold ${ff}px ${fam}`;
+                const fw = Math.max(...fl.map(t => c.measureText(t).width));
+                c.fillStyle = P.panel; c.fillRect(W - fw - W * 0.06, H - fl.length * ff * 1.5 - W * 0.03, fw + W * 0.06, fl.length * ff * 1.5 + W * 0.03);
+                c.fillStyle = P.ink; c.textAlign = 'right';
+                fl.forEach((t, i) => c.fillText(t, W - W * 0.03, H - W * 0.02 - (fl.length - 1 - i) * ff * 1.5));
+                c.textAlign = 'left';
+            }
+            applyGrain(c, W, H, P.grain);
+        },
+        onDown(x, y) { const t = S.tl; if (!t) return false; setEdge(x, y); S.drag = { edge: true }; return true; },
+        onMove(x, y) { if (!S.drag || !S.drag.edge) return false; setEdge(x, y); return true; },
+        onUp() { S.drag = null; },
+    };
+    function setEdge(x, y) {
+        const t = S.tl;
+        const b = clamp(Math.floor(y / t.bh), 0, t.nb - 1);
+        S.edges[b] = clamp(x / t.W, 0.05, 0.97);
+    }
+
+    /* =====================================================
+     * 模板 7：检测框关系图
+     * ===================================================== */
+    const detect = {
+        id: 'detect',
+        name: '检测框关系图',
+        hint: '在上方图片上拖出方框（点一下方框可删除）。第1行文字标在图上，第2行文字放在下方色块区。',
+        defaults: { k: 2, cropScale: 1, panelH: 100, fontSize: 2.4, font: 'theme', labels: true, box: '#2f5be8', label: '#1d4ed8', panel: '#1250e8', lineColor: '#ffffff' },
+        controls: [
+            { group: '关系图', key: 'k', label: '每个方块连向最近的几个', type: 'range', min: 0, max: 4, step: 1 },
+            { group: '关系图', key: 'cropScale', label: '碎片缩放', type: 'range', min: 0.4, max: 2, step: 0.1 },
+            { group: '关系图', key: 'panelH', label: '下方区域高度 %', type: 'range', min: 50, max: 140, step: 5 },
+            { group: '文字', key: 'labels', label: '显示文字标签', type: 'checkbox' },
+            { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 1.2, max: 5, step: 0.1 },
+            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
+            { group: '颜色', key: 'box', label: '方框颜色', type: 'color' },
+            { group: '颜色', key: 'label', label: '图上文字颜色', type: 'color' },
+            { group: '颜色', key: 'panel', label: '下方底色', type: 'color' },
+            { group: '颜色', key: 'lineColor', label: '连线/下方文字色', type: 'color' },
+        ],
+        exportOk() { return S.boxes.length > 0; },
+        exportMsg: '还没有画方框，先在图上拖出几个吧',
+        snap() { return JSON.stringify(S.boxes); },
+        restore(str) { S.boxes = JSON.parse(str); },
+        clear() { S.boxes = []; },
+        render(cv, c, P) {
+            const img = S.img, W = 1200, IW = W, IH = Math.round(W * imgH(img) / imgW(img)), PH = Math.round(IH * P.panelH / 100);
+            cv.width = W; cv.height = IH + PH;
+            c.drawImage(img, 0, 0, IW, IH);
+            c.fillStyle = P.panel; c.fillRect(0, IH, W, PH);
+            S.det = { IW, IH, PH };
+            const boxes = S.boxes;
+            c.lineWidth = 3; c.strokeStyle = P.box;
+            boxes.forEach(b => c.strokeRect(b.x0 * IW, b.y0 * IH, (b.x1 - b.x0) * IW, (b.y1 - b.y0) * IH));
+            if (!S.noGuides && S.tmpBox) {
+                const b = S.tmpBox;
+                c.save(); c.setLineDash([8, 6]); c.strokeRect(b.x0 * IW, b.y0 * IH, (b.x1 - b.x0) * IW, (b.y1 - b.y0) * IH); c.restore();
+            }
+            // 下方关系图
+            const pts = boxes.map(b => ({ x: (b.x0 + b.x1) / 2 * IW, y: IH + (b.y0 + b.y1) / 2 * PH, w: (b.x1 - b.x0) * IW * P.cropScale, h: (b.y1 - b.y0) * IH * P.cropScale, b }));
+            const pairs = new Set();
+            pts.forEach((p, i) => {
+                pts.map((q, j) => ({ j, d: Math.hypot(p.x - q.x, p.y - q.y) })).filter(o => o.j !== i)
+                    .sort((a, b) => a.d - b.d).slice(0, P.k).forEach(o => pairs.add(Math.min(i, o.j) + '-' + Math.max(i, o.j)));
+            });
+            c.strokeStyle = P.lineColor; c.lineWidth = 2; c.globalAlpha = 0.85;
+            pairs.forEach(k => { const [a, b] = k.split('-').map(Number); c.beginPath(); c.moveTo(pts[a].x, pts[a].y); c.lineTo(pts[b].x, pts[b].y); c.stroke(); });
+            c.globalAlpha = 1;
+            pts.forEach(p => {
+                c.fillStyle = '#fff'; c.fillRect(p.x - p.w / 2 - 3, p.y - p.h / 2 - 3, p.w + 6, p.h + 6);
+                c.drawImage(img, p.b.x0 * imgW(img), p.b.y0 * imgH(img), (p.b.x1 - p.b.x0) * imgW(img), (p.b.y1 - p.b.y0) * imgH(img), p.x - p.w / 2, p.y - p.h / 2, p.w, p.h);
+            });
+            // 文字标签
+            if (P.labels) {
+                const lines = textLines(SAMPLE_DETECT), fs = Math.round(W * P.fontSize / 100), fam = fontFamily(P.font);
+                const L1 = unitsOf(lines[0] || ''), L2 = unitsOf(lines[1] || '');
+                c.textBaseline = 'middle'; c.textAlign = 'left';
+                const put = (i, w, x, y, color) => {
+                    const num = `(${i + 1}) `;
+                    c.font = `${fs}px ${fam}`; const nw = c.measureText(num).width;
+                    c.font = `bold ${fs}px ${fam}`; const ww = c.measureText(w).width;
+                    const xx = clamp(x, 10, IW - nw - ww - 10);
+                    c.fillStyle = color; c.font = `${fs}px ${fam}`; c.fillText(num, xx, y);
+                    c.font = `bold ${fs}px ${fam}`; c.fillText(w, xx + nw, y);
+                };
+                L1.forEach((w, i) => { const t = L1.length > 1 ? i / (L1.length - 1) : 0; put(i, w, IW * 0.1 + t * IW * 0.62, IH * 0.15 + t * IH * 0.6, P.label); });
+                const zy = [0.1, 0.3, 0.06, 0.5, 0.88, 0.28, 0.92];
+                L2.forEach((w, i) => { const t = L2.length > 1 ? i / (L2.length - 1) : 0.5; put(i, w, IW * (0.06 + 0.8 * t), IH + PH * zy[i % zy.length], P.lineColor); });
+            }
+        },
+        onDown(x, y) {
+            const d = S.det;
+            if (!d || x < 0 || x > d.IW || y < 0 || y > d.IH) return false;
+            const fx = x / d.IW, fy = y / d.IH;
+            let hit = -1;
+            for (let k = S.boxes.length - 1; k >= 0; k--) {
+                const b = S.boxes[k];
+                if (fx >= b.x0 && fx <= b.x1 && fy >= b.y0 && fy <= b.y1) { hit = k; break; }
+            }
+            S.drag = { box: true, x0: fx, y0: fy, hit, moved: false };
+            S.tmpBox = null;
+            return true;
+        },
+        onMove(x, y) {
+            const dr = S.drag, d = S.det;
+            if (!dr || !dr.box || !d) return false;
+            const fx = clamp(x / d.IW, 0, 1), fy = clamp(y / d.IH, 0, 1);
+            if (Math.abs(fx - dr.x0) * d.IW > 8 || Math.abs(fy - dr.y0) * d.IH > 8) dr.moved = true;
+            if (dr.moved) S.tmpBox = { x0: Math.min(dr.x0, fx), y0: Math.min(dr.y0, fy), x1: Math.max(dr.x0, fx), y1: Math.max(dr.y0, fy) };
+            return true;
+        },
+        onUp() {
+            const dr = S.drag, d = S.det;
+            if (dr && dr.box && d) {
+                const b = S.tmpBox;
+                if (!dr.moved && dr.hit >= 0) S.boxes.splice(dr.hit, 1);
+                else if (b && (b.x1 - b.x0) * d.IW > 10 && (b.y1 - b.y0) * d.IH > 10) S.boxes.push(b);
+            }
+            S.tmpBox = null; S.drag = null;
+        },
+    };
+
+    /* =====================================================
+     * 模板 8：图版标注
+     * ===================================================== */
+    const board = {
+        id: 'board',
+        name: '图版标注',
+        hint: '第1行 = 标题，第2行 = 说明，之后每一行是一条图例（自动编罗马数字，分布在图的上下两侧）。',
+        defaults: { ratio: '3:2', imgW: 66, fontSize: 1.15, font: 'theme', tick: true, bg: '#ffffff', ink: '#222222' },
+        controls: [
+            { group: '版面', key: 'ratio', label: '画面比例', type: 'select', options: RATIO_OPTS },
+            { group: '版面', key: 'imgW', label: '图片区域宽度 %', type: 'range', min: 40, max: 85, step: 1 },
+            { group: '版面', key: 'tick', label: '显示小刻度线', type: 'checkbox' },
+            { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 0.8, max: 2.2, step: 0.05 },
+            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
+            { group: '颜色', key: 'bg', label: '背景色', type: 'color' },
+            { group: '颜色', key: 'ink', label: '文字颜色', type: 'color' },
+        ],
+        render(cv, c, P) {
+            const img = S.img, [rw, rh] = RATIOS[P.ratio] || [3, 2], W = 1500, H = Math.round(W * rh / rw);
+            cv.width = W; cv.height = H;
+            c.fillStyle = P.bg; c.fillRect(0, 0, W, H);
+            const fam = fontFamily(P.font), fs = Math.round(W * P.fontSize / 100);
+            const M = W * 0.035, areaW = W * P.imgW / 100, areaX = W - M - areaW, areaTop = H * 0.12, areaH = H * 0.76;
+            const sc = Math.min(areaW / imgW(img), areaH / imgH(img));
+            const dw = imgW(img) * sc, dh = imgH(img) * sc, dx = areaX + (areaW - dw) / 2, dy = areaTop + (areaH - dh) / 2;
+            c.drawImage(img, dx, dy, dw, dh);
+            const lines = textLines(SAMPLE_BOARD);
+            const title = lines[0] || '', desc = lines[1] || '', entries = lines.slice(2).filter(Boolean);
+            const n = entries.length, topN = Math.ceil(n / 2), botN = n - topN;
+            c.fillStyle = P.ink; c.strokeStyle = P.ink; c.lineWidth = 1.2;
+            c.textBaseline = 'middle'; c.textAlign = 'center'; c.font = `${fs * 0.85}px ${fam}`;
+            for (let i = 0; i < topN; i++) {
+                const x = dx + dw * (i + 0.5) / topN;
+                c.fillText(romanize(i + 1), x, dy - fs * 1.7);
+                if (P.tick) { c.beginPath(); c.moveTo(x, dy - fs * 0.9); c.lineTo(x, dy - fs * 0.2); c.stroke(); }
+            }
+            for (let j = 0; j < botN; j++) {
+                const x = dx + dw * (j + 0.5) / botN;
+                c.fillText(romanize(topN + j + 1), x, dy + dh + fs * 1.7);
+                if (P.tick) { c.beginPath(); c.moveTo(x, dy + dh + fs * 0.9); c.lineTo(x, dy + dh + fs * 0.2); c.stroke(); }
+            }
+            c.textAlign = 'left';
+            const colW = Math.max(80, areaX - M * 2) * 0.92, x0 = M;
+            const flow = (k, draw) => {
+                let y = H * 0.08;
+                const f1 = fs * k, f2 = fs * 0.9 * k;
+                if (title) {
+                    mctx.font = `${f1}px ${fam}`; c.font = mctx.font;
+                    if (draw && 'letterSpacing' in c) c.letterSpacing = (f1 * 0.08) + 'px';
+                    textBlock(title.toUpperCase(), colW).forEach(t => { if (draw) c.fillText(t, x0, y); y += f1 * 1.5; });
+                    if ('letterSpacing' in c) c.letterSpacing = '0px';
+                }
+                if (desc) {
+                    y = Math.max(y + f2 * 2, H * 0.3);
+                    mctx.font = `${f2}px ${fam}`; c.font = mctx.font;
+                    if (draw && 'letterSpacing' in c) c.letterSpacing = (f2 * 0.06) + 'px';
+                    textBlock(desc.toUpperCase(), colW).forEach(t => { if (draw) c.fillText(t, x0, y); y += f2 * 1.6; });
+                    if ('letterSpacing' in c) c.letterSpacing = '0px';
+                }
+                if (entries.length) {
+                    y += f2 * 1.2;
+                    mctx.font = `${f2}px ${fam}`; c.font = mctx.font;
+                    if (draw) c.fillText('KEY:', x0, y);
+                    y += f2 * 1.8;
+                    const rw2 = mctx.measureText('XVIII.').width + f2 * 0.6;
+                    entries.forEach((t, i) => {
+                        if (draw) c.fillText(romanize(i + 1) + '.', x0, y);
+                        textBlock(t, colW - rw2).forEach(l => { if (draw) c.fillText(l, x0 + rw2, y); y += f2 * 1.45; });
+                        y += f2 * 0.3;
+                    });
+                }
+                return y;
+            };
+            let k = 1;
+            for (let t = 0; t < 10 && flow(k, false) > H - M; t++) k *= 0.92;
+            c.fillStyle = P.ink; flow(k, true);
+        },
+    };
+
+
+    /* =====================================================
+     * 模板 9：剪影文字（用手指描轮廓，里面写字）
+     * ===================================================== */
+    const silhouette = {
+        id: 'silhouette',
+        name: '剪影文字',
+        hint: '用手指沿着人物/物体的轮廓描一圈，里面会填上颜色和文字。点一下已有的剪影可以删除。',
+        defaults: { layout: 'inline', panelPct: 50, fill: '#f7d23e', outline: 0, outlineColor: '#ffffff', dim: 0, ink: '#c8102e', font: 'kai', fontSize: 2.4, lineGap: 1.35, angle: -4, repeat: true, grain: 0 },
+        controls: [
+            { group: '版面', key: 'layout', label: '文字放在哪', type: 'select', options: [['inline', '写在剪影里'], ['side', '剪影纯色 + 右侧文字栏']] },
+            { group: '版面', key: 'panelPct', label: '右侧文字栏宽度 %', type: 'range', min: 30, max: 90, step: 5, show: P => P.layout === 'side' },
+            { group: '剪影', key: 'fill', label: '剪影颜色', type: 'color' },
+            { group: '剪影', key: 'outline', label: '白边宽度', type: 'range', min: 0, max: 30, step: 1 },
+            { group: '剪影', key: 'outlineColor', label: '边的颜色', type: 'color', show: P => P.outline > 0 },
+            { group: '剪影', key: 'dim', label: '压暗背景图 %', type: 'range', min: 0, max: 60, step: 1 },
+            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
+            { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 1, max: 6, step: 0.1 },
+            { group: '文字', key: 'lineGap', label: '行距', type: 'range', min: 1, max: 2.2, step: 0.05, show: P => P.layout === 'inline' || true },
+            { group: '文字', key: 'angle', label: '文字倾斜角度', type: 'range', min: -45, max: 45, step: 1, show: P => P.layout === 'inline' },
+            { group: '文字', key: 'repeat', label: '文字重复铺满', type: 'checkbox', show: P => P.layout === 'inline' },
+            { group: '文字', key: 'ink', label: '文字颜色', type: 'color' },
+            { group: '质感', key: 'grain', label: '纸张颗粒 %', type: 'range', min: 0, max: 100, step: 5 },
+        ],
+        snap() { return JSON.stringify(S.shapes); },
+        restore(str) { S.shapes = JSON.parse(str); },
+        clear() { S.shapes = []; },
+        render(cv, c, P) {
+            const img = S.img, IW = 1200, IH = Math.round(IW * imgH(img) / imgW(img));
+            const side = P.layout === 'side', PW = side ? Math.round(IW * P.panelPct / 100) : 0;
+            cv.width = IW + PW; cv.height = IH;
+            c.fillStyle = side ? P.fill : '#ffffff'; c.fillRect(0, 0, cv.width, cv.height);
+            c.drawImage(img, 0, 0, IW, IH);
+            if (P.dim > 0) { c.fillStyle = `rgba(0,0,0,${P.dim / 100})`; c.fillRect(0, 0, IW, IH); }
+            S.geo = { x: 0, y: 0, w: IW, h: IH };
+            const fam = fontFamily(P.font), fs = Math.round(IW * P.fontSize / 100), lh = fs * P.lineGap;
+            const raw = ((S.text || '').trim() || SAMPLE).replace(/\s*\n\s*/g, ' ');
+            const hasSp = /\s/.test(raw), units = hasSp ? raw.split(/\s+/) : [...raw];
+            c.font = `${fs}px ${fam}`; mctx.font = c.font;
+            const spaceW = hasSp ? mctx.measureText(' ').width : 0, widths = units.map(u => mctx.measureText(u).width);
+            S.shapes.forEach(sh => {
+                polyPath(c, sh, IW, IH);
+                if (P.outline > 0) { c.save(); c.lineJoin = 'round'; c.lineWidth = P.outline * 2; c.strokeStyle = P.outlineColor; c.stroke(); c.restore(); }
+                c.fillStyle = P.fill; c.fill();
+                if (side) return;
+                c.save();
+                polyPath(c, sh, IW, IH); c.clip();
+                const xs = sh.map(p => p.x * IW), ys = sh.map(p => p.y * IH);
+                const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+                const R = Math.hypot(x1 - x0, y1 - y0) / 2 + fs;
+                c.translate((x0 + x1) / 2, (y0 + y1) / 2); c.rotate(P.angle * Math.PI / 180);
+                c.fillStyle = P.ink; c.font = `${fs}px ${fam}`; c.textBaseline = 'middle'; c.textAlign = 'left';
+                let cursor = 0, done = false;
+                for (let yy = -R; yy < R && !done; yy += lh) {
+                    let x = -R;
+                    while (x < R) {
+                        if (!P.repeat && cursor >= units.length) { done = true; break; }
+                        const k = cursor % units.length;
+                        c.fillText(units[k], x, yy);
+                        x += widths[k] + spaceW; cursor++;
+                    }
+                }
+                c.restore();
+            });
+            if (side) {
+                c.fillStyle = P.ink; c.font = `${fs}px ${fam}`; c.textBaseline = 'middle'; c.textAlign = 'left';
+                textBlock(raw, PW * 0.82).forEach((t, i) => c.fillText(t, IW + PW * 0.09, fs * 2 + i * lh));
+            }
+            if (!S.noGuides && S.tmpPath && S.tmpPath.length > 1) {
+                c.save(); c.setLineDash([8, 6]); c.lineWidth = 4; c.strokeStyle = '#3b9bff'; c.beginPath();
+                S.tmpPath.forEach((p, i) => i ? c.lineTo(p.x * IW, p.y * IH) : c.moveTo(p.x * IW, p.y * IH));
+                c.stroke(); c.restore();
+            }
+            applyGrain(c, cv.width, cv.height, P.grain);
+        },
+        onDown(x, y) {
+            const g = S.geo;
+            if (!g || x < 0 || x > g.w || y < 0 || y > g.h) return false;
+            S.tmpPath = [{ x: x / g.w, y: y / g.h }];
+            S.drag = { lasso: true, sx: x, sy: y, moved: false };
+            return true;
+        },
+        onMove(x, y) {
+            const d = S.drag, g = S.geo;
+            if (!d || !d.lasso || !g) return false;
+            const p = { x: clamp(x / g.w, 0, 1), y: clamp(y / g.h, 0, 1) }, last = S.tmpPath[S.tmpPath.length - 1];
+            if (Math.hypot((p.x - last.x) * g.w, (p.y - last.y) * g.h) > 4) S.tmpPath.push(p);
+            if (Math.hypot(x - d.sx, y - d.sy) > 8) d.moved = true;
+            return true;
+        },
+        onUp() {
+            const d = S.drag;
+            if (d && d.lasso) {
+                const path = S.tmpPath || [];
+                if (d.moved && path.length >= 6) S.shapes.push(path.map(p => ({ x: +p.x.toFixed(4), y: +p.y.toFixed(4) })));
+                else if (path[0]) {
+                    for (let k = S.shapes.length - 1; k >= 0; k--) if (inPoly(S.shapes[k], path[0].x, path[0].y)) { S.shapes.splice(k, 1); break; }
+                }
+            }
+            S.tmpPath = null; S.drag = null;
+        },
+    };
+
+    /* =====================================================
+     * 模板 10：缺字填空（挖掉的字出现在下方）
+     * ===================================================== */
+    const CLOZE_PAL = {
+        wine: { top: '#6b1a1f', ink: '#ffffff', blank: '#efe9e1', bottom: '#ece8e0', tileBg: '#6b1a1f', tileInk: '#ffffff' },
+        cream: { top: '#d9d0bf', ink: '#111111', blank: '#7b2a2e', bottom: '#7b2a2e', tileBg: '#e9e2d0', tileInk: '#111111' },
+    };
+    const cloze = {
+        id: 'cloze',
+        name: '缺字填空',
+        hint: '点上方文字里的字：那个字变成空格，并出现在下方的字块里。手指划过可连选。',
+        defaults: Object.assign({ palette: 'wine', arrange: 'wave', title: false, fontSize: 4.2, font: 'serif', bottomPct: 90, grain: 20 }, CLOZE_PAL.wine),
+        controls: [
+            { group: '版面', key: 'arrange', label: '下方字块排列', type: 'select', options: [['row', '一排'], ['wave', '波浪'], ['scatter', '散落']] },
+            { group: '版面', key: 'bottomPct', label: '下方区域高度 %', type: 'range', min: 50, max: 140, step: 5 },
+            { group: '版面', key: 'title', label: '第一行当标题（居中，不参与挖字）', type: 'checkbox', onChange() { S.cloze = { order: [] }; } },
+            { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 2.5, max: 8, step: 0.1 },
+            { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
+            { group: '颜色', key: 'palette', label: '配色方案', type: 'select', options: [['wine', '酒红'], ['cream', '米色']], onChange(v) { const pl = CLOZE_PAL[v]; if (pl) Object.entries(pl).forEach(([k, val]) => ui.setParam(k, val)); } },
+            { group: '颜色', key: 'top', label: '上方底色', type: 'color' },
+            { group: '颜色', key: 'ink', label: '文字颜色', type: 'color' },
+            { group: '颜色', key: 'blank', label: '空格颜色', type: 'color' },
+            { group: '颜色', key: 'bottom', label: '下方底色', type: 'color' },
+            { group: '颜色', key: 'tileBg', label: '字块底色', type: 'color' },
+            { group: '颜色', key: 'tileInk', label: '字块文字色', type: 'color' },
+            { group: '质感', key: 'grain', label: '纸张颗粒 %', type: 'range', min: 0, max: 100, step: 5 },
+        ],
+        snap() { return JSON.stringify(S.cloze.order); },
+        restore(str) { S.cloze = { order: JSON.parse(str) }; },
+        clear() { S.cloze = { order: [] }; },
+        render(cv, c, P) {
+            S.cloze ??= { order: [] };
+            const W = 1200, M = 90, fs = Math.round(W * P.fontSize / 100), fam = fontFamily(P.font);
+            mctx.font = `${fs}px ${fam}`;
+            const toks = tokenize((S.text || '').trim() || SAMPLE_CLOZE, 'char');
+            const titleEnd = P.title ? toks.findIndex(t => t.nl) : -1;
+            const spaceW = mctx.measureText(' ').width;
+            const mk = (tk, i) => tk.nl ? { nl: true, w: 0 } : { i, t: tk.t, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) };
+            const tItems = P.title ? toks.map(mk).filter((it, i) => i < titleEnd) : [];
+            const bItems = toks.map(mk).filter((it, i) => !(P.title && i <= titleEnd));
+            const tLines = wrap(tItems, W - 2 * M), bLines = wrap(bItems, W - 2 * M);
+            const lh = fs * 1.5;
+            const topH = Math.round(M * 1.1 + (tLines.length + bLines.length) * lh + M * 0.8), bottomH = Math.round(topH * P.bottomPct / 100);
+            cv.width = W; cv.height = topH + bottomH;
+            c.fillStyle = P.top; c.fillRect(0, 0, W, topH);
+            c.fillStyle = P.bottom; c.fillRect(0, topH, W, bottomH);
+            c.font = `${fs}px ${fam}`; c.textBaseline = 'middle'; c.textAlign = 'left';
+            let y = M * 1.1;
+            tLines.forEach(l => {
+                let x = (W - l.w) / 2;
+                l.items.forEach(it => { if (it.nl) return; c.fillStyle = P.ink; c.fillText(it.t, x, y + lh / 2); x += it.w; });
+                y += lh;
+            });
+            bLines.forEach(l => {
+                let x = M;
+                l.items.forEach(it => {
+                    if (it.nl) return;
+                    if (S.cloze.order.includes(it.i)) { c.fillStyle = P.blank; c.fillRect(x, y + lh * 0.06, it.w, lh * 0.9); }
+                    else { c.fillStyle = P.ink; c.fillText(it.t, x, y + lh / 2); }
+                    S.hits.push({ kind: 'chr', i: it.i, x, y, w: it.w, h: lh });
+                    x += it.w;
+                });
+                y += lh;
+            });
+            const n = S.cloze.order.length, ts = fs * 1.25, cyB = topH + bottomH / 2;
+            S.cloze.order.forEach((idx, k) => {
+                const ch = toks[idx] ? toks[idx].t : '';
+                let tx, ty;
+                const along = n > 1 ? k / (n - 1) : 0.5;
+                if (P.arrange === 'scatter') { tx = M + ts / 2 + hash(idx * 3 + 7) * (W - 2 * M - ts); ty = topH + ts / 2 + hash(idx * 3 + 9) * Math.max(1, bottomH - ts); }
+                else { tx = M + ts / 2 + (W - 2 * M - ts) * along; ty = cyB + (P.arrange === 'wave' ? Math.sin(k * 0.9) * bottomH * 0.28 : 0); }
+                c.save(); c.translate(tx, ty); c.rotate((hash(idx + 5) - 0.5) * 0.14);
+                c.fillStyle = P.tileBg; c.fillRect(-ts / 2, -ts / 2, ts, ts);
+                c.fillStyle = P.tileInk; c.font = `${fs * 0.95}px ${fam}`; c.textAlign = 'center'; c.fillText(ch, 0, 0);
+                c.restore();
+            });
+            applyGrain(c, W, cv.height, P.grain);
+        },
+        onDown(x, y) {
+            S.cloze ??= { order: [] };
+            const h = S.hits.find(h => h.kind === 'chr' && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
+            if (!h) return false;
+            const has = S.cloze.order.includes(h.i);
+            S.cloze.order = has ? S.cloze.order.filter(v => v !== h.i) : [...S.cloze.order, h.i];
+            S.drag = { cloze: true, val: !has };
+            return true;
+        },
+        onMove(x, y) {
+            const d = S.drag;
+            if (!d || !d.cloze) return false;
+            const h = S.hits.find(h => h.kind === 'chr' && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
+            if (!h) return false;
+            const has = S.cloze.order.includes(h.i);
+            if (d.val && !has) { S.cloze.order = [...S.cloze.order, h.i]; return true; }
+            if (!d.val && has) { S.cloze.order = S.cloze.order.filter(v => v !== h.i); return true; }
+            return false;
+        },
+        onUp() { S.drag = null; },
+    };
+
     /* ---------- 模板注册 ---------- */
     function register(t) {
         TEMPLATES[t.id] = t;
         if (overlay) refreshTplSelect();
     }
-    [cutout, blackout, captcha].forEach(t => TEMPLATES[t.id] = t);
+    [cutout, blackout, captcha, tiles, shape, timeline, detect, board, silhouette, cloze].forEach(t => TEMPLATES[t.id] = t);
     window.CutoutPoster = {
         register, templates: TEMPLATES,
         util: { S, pathShape, tokenize, wrap, fontFamily, mulberry32, clamp, paintDown, paintMove },
@@ -575,12 +1500,17 @@
             im.src = url;
         });
     }
-    function setImage(im) { S.img = im; S.imgId++; }
+    function setImage(im, isCrop) {
+        S.img = im; if (!isCrop) S.srcImg = im;
+        S.imgId++;
+        S.cut.holes = []; S.sel = -1; S.boxes = []; S.shapes = []; S.tiles = null; S.undo = [];
+    }
 
     /* =====================================================
      * 面板
      * ===================================================== */
     let overlay = null, cv = null, c2d = null, rafPending = false;
+    const panelPos = { x: 0, y: 0 };
     const fontLoading = new Set();
     const $ = sel => overlay.querySelector(sel);
 
@@ -588,6 +1518,7 @@
     function params() {
         const st = getSettings(), tpl = curTpl();
         st.params[tpl.id] = Object.assign({}, tpl.defaults, st.params[tpl.id]);
+        if (tpl.migrate) tpl.migrate(st.params[tpl.id]);
         return st.params[tpl.id];
     }
     function scheduleRender() {
@@ -611,7 +1542,17 @@
         catch (e) { console.error('[CutoutPoster] render error', e); toast('渲染出错，详见控制台'); }
         const hint = typeof tpl.hint === 'function' ? tpl.hint(P) : tpl.hint;
         $('#cp_hint').textContent = hint || '';
+        syncControls();
         updateVisibility();
+    }
+    // 导出：用离屏画布重新渲染一遍（不带选中框/辅助线）
+    function renderExport() {
+        const tpl = curTpl(), P = params();
+        const off = document.createElement('canvas');
+        S.noGuides = true;
+        try { tpl.render(off, off.getContext('2d'), P); } finally { S.noGuides = false; }
+        render();
+        return off;
     }
     const ui = {
         setParam(key, val) {
@@ -631,6 +1572,19 @@
             card.style.display = any ? '' : 'none';
         });
     }
+    function pushUndo(str) { S.undo.push(str); if (S.undo.length > 60) S.undo.shift(); }
+    function syncControls() {
+        const tpl = curTpl(), P = params();
+        tpl.controls.forEach(ct => {
+            if (!ct.get) return;
+            const el = S.ctls[ct.key];
+            if (!el) return;
+            const v = ct.get(P);
+            if (v === undefined) return;
+            el.value = v;
+            if (el._out) el._out.textContent = ' ' + v;
+        });
+    }
     function buildControls() {
         const tpl = curTpl(), P = params(), box = $('#cp_dyn');
         box.innerHTML = ''; S.ctls = {}; S.cards = [];
@@ -641,6 +1595,18 @@
                 card = document.createElement('div'); card.className = 'cp_card';
                 const t = document.createElement('div'); t.className = 'cp_ct'; t.textContent = g;
                 card.append(t); box.append(card); S.cards.push(card); lastGroup = g;
+            }
+            if (ct.type === 'button') {
+                const w = document.createElement('div'); w.className = 'cp_ctl';
+                const b = document.createElement('button'); b.className = 'cp_btn'; b.textContent = ct.label;
+                b.addEventListener('click', () => {
+                    const t2 = curTpl();
+                    if (t2.snap) pushUndo(t2.snap());
+                    ct.onClick(params());
+                    render();
+                });
+                S.ctls[ct.key] = b; w.append(b); card.append(w);
+                return;
             }
             const wrap = document.createElement('label');
             wrap.className = 'cp_ctl' + (ct.type === 'checkbox' ? ' cp_inline' : '');
@@ -654,9 +1620,10 @@
                 input.value = P[ct.key];
             } else if (ct.type === 'range') {
                 input = document.createElement('input');
-                input.type = 'range'; input.min = ct.min; input.max = ct.max; input.step = ct.step; input.value = P[ct.key];
-                const out = document.createElement('b'); out.textContent = ' ' + P[ct.key];
-                span.append(out);
+                input.type = 'range'; input.min = ct.min; input.max = ct.max; input.step = ct.step;
+                input.value = ct.get ? (ct.get(P) ?? ct.min) : P[ct.key];
+                const out = document.createElement('b'); out.textContent = ' ' + input.value;
+                span.append(out); input._out = out;
                 input.addEventListener('input', () => { out.textContent = ' ' + input.value; });
             } else if (ct.type === 'checkbox') {
                 input = document.createElement('input'); input.type = 'checkbox'; input.checked = !!P[ct.key];
@@ -665,7 +1632,8 @@
             }
             input.addEventListener('input', () => {
                 const v = ct.type === 'range' ? Number(input.value) : ct.type === 'checkbox' ? input.checked : input.value;
-                params()[ct.key] = v; saveSettings();
+                if (ct.set) ct.set(v, params());
+                else { params()[ct.key] = v; saveSettings(); }
                 if (ct.onChange) ct.onChange(v);
                 scheduleRender();
             });
@@ -709,8 +1677,7 @@
             <div class="cp_tools">
               <button id="cp_undo" class="cp_ic" title="撤销">${ic('<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>')}</button>
               <button id="cp_clear" class="cp_ic" title="清除全部">${ic('<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>')}</button>
-              <button id="cp_export" class="cp_ic" title="导出 PNG">${ic('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>')}</button>
-              <button id="cp_copy" class="cp_ic" title="复制图片">${ic('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>')}</button>
+              <button id="cp_export" class="cp_ic" title="保存图片">${ic('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>')}</button>
               <button id="cp_toggle" class="cp_ic" title="显示/隐藏设置">${ic('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>')}</button>
               <button id="cp_close" class="cp_ic" title="关闭">${ic('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>')}</button>
             </div>
@@ -741,6 +1708,7 @@
                     <button id="cp_bg" class="cp_btn">聊天背景</button>
                   </div>
                   <div class="cp_row"><input type="text" id="cp_url" placeholder="图片 URL"><button id="cp_urlgo" class="cp_btn">载入</button></div>
+                  <div class="cp_row"><button id="cp_cropbtn" class="cp_btn">裁剪 / 调整大小</button></div>
                 </div>
               </div>
               <div class="cp_pane" data-pane="b" style="display:none"><div id="cp_dyn"></div></div>
@@ -761,6 +1729,37 @@
               </div>
             </div>
           </div>
+        </div>
+        <div id="cp_crop" style="display:none">
+          <div class="cp_expbox">
+            <canvas id="cp_crop_cv"></canvas>
+            <div class="cp_note">拖动图片可移动位置，滑杆放大/缩小。</div>
+            <label class="cp_ctl"><span>画面比例</span>
+              <select id="cp_crop_ratio">
+                <option value="orig">原比例</option><option value="1:1">1:1</option><option value="4:3">4:3</option><option value="3:4">3:4</option>
+                <option value="3:2">3:2</option><option value="2:3">2:3</option><option value="16:9">16:9</option><option value="9:16">9:16</option>
+              </select></label>
+            <label class="cp_ctl"><span>缩放</span><input type="range" id="cp_crop_zoom" min="1" max="5" step="0.05" value="1"></label>
+            <label class="cp_ctl"><span>输出最长边（越小越流畅）</span>
+              <select id="cp_crop_out"><option value="800">800</option><option value="1200">1200</option><option value="1600" selected>1600</option><option value="2400">2400</option></select></label>
+            <div class="cp_row">
+              <button id="cp_crop_ok" class="cp_btn">应用</button>
+              <button id="cp_crop_reset" class="cp_btn">重置</button>
+              <button id="cp_crop_cancel" class="cp_btn">取消</button>
+            </div>
+          </div>
+        </div>
+        <div id="cp_exp" style="display:none">
+          <div class="cp_expbox">
+            <img id="cp_expimg" alt="">
+            <div class="cp_row">
+              <button id="cp_exp_dl" class="cp_btn">下载</button>
+              <button id="cp_exp_share" class="cp_btn">分享/存相册</button>
+              <button id="cp_exp_copy" class="cp_btn">复制</button>
+              <button id="cp_exp_close" class="cp_btn">关闭</button>
+            </div>
+            <div class="cp_note">没反应的话，长按上面的图片，选“下载图片 / 保存图片”。</div>
+          </div>
         </div>`;
         document.body.append(overlay);
         cv = $('#cp_canvas'); c2d = cv.getContext('2d');
@@ -777,7 +1776,7 @@
         overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
         $('#cp_close').addEventListener('click', closePanel);
         $('#cp_toggle').addEventListener('click', () => { overlay.classList.toggle('cp_focus'); setTimeout(render, 30); });
-        $('#cp_text').addEventListener('input', e => { S.text = e.target.value; S.keep = null; S.slots = new Set(); scheduleRender(); });
+        $('#cp_text').addEventListener('input', e => { S.text = e.target.value; S.keep = null; S.slots = new Set(); S.cloze = { order: [] }; scheduleRender(); });
         overlay.querySelectorAll('.cp_tabs button').forEach(b => b.addEventListener('click', () => {
             overlay.querySelectorAll('.cp_tabs button').forEach(x => x.classList.toggle('on', x === b));
             overlay.querySelectorAll('.cp_pane').forEach(p => { p.style.display = p.dataset.pane === b.dataset.tab ? '' : 'none'; });
@@ -816,22 +1815,104 @@
             if (tpl.snap) S.undo.push(tpl.snap());
             tpl.clear(); render();
         });
+        // 保存：先弹出预览，再下载 / 分享 / 复制（每个按钮都是一次新的点击，不会被浏览器拦截）
+        let expBlob = null, expUrl = null;
+        const closeExp = () => {
+            $('#cp_exp').style.display = 'none';
+            if (expUrl) { URL.revokeObjectURL(expUrl); expUrl = null; }
+            $('#cp_expimg').removeAttribute('src');
+        };
+        $('#cp_exp_close').addEventListener('click', closeExp);
         $('#cp_export').addEventListener('click', () => {
+            const tpl = curTpl();
+            if (tpl.exportOk && !tpl.exportOk(params())) return toast(tpl.exportMsg || '还没有内容可以导出');
             try {
-                cv.toBlob(b => {
+                const off = renderExport();
+                off.toBlob(b => {
                     if (!b) return toast('导出失败：图片跨域，请改用上传');
-                    download(b, `cutout_${Date.now()}.png`);
+                    if (expUrl) URL.revokeObjectURL(expUrl);
+                    expBlob = b; expUrl = URL.createObjectURL(b);
+                    $('#cp_expimg').src = expUrl;
+                    $('#cp_exp').style.display = 'flex';
                 }, 'image/png');
             } catch (e) { toast('导出失败：图片跨域，请改用上传'); }
         });
-        $('#cp_copy').addEventListener('click', () => {
-            try {
-                cv.toBlob(async b => {
-                    try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': b })]); toast('已复制到剪贴板'); }
-                    catch (e) { toast('复制失败，请用导出'); }
-                }, 'image/png');
-            } catch (e) { toast('复制失败：图片跨域'); }
+        $('#cp_exp_dl').addEventListener('click', () => {
+            if (!expUrl) return;
+            const a = document.createElement('a');
+            a.href = expUrl; a.download = `cutout_${Date.now()}.png`;
+            document.body.append(a); a.click();
+            setTimeout(() => a.remove(), 0);
         });
+        $('#cp_exp_share').addEventListener('click', async () => {
+            if (!expBlob) return;
+            const f = new File([expBlob], `cutout_${Date.now()}.png`, { type: 'image/png' });
+            try {
+                if (navigator.canShare && navigator.canShare({ files: [f] })) await navigator.share({ files: [f] });
+                else toast('此环境不支持分享，请长按图片保存');
+            } catch (e) { /* 取消分享 */ }
+        });
+        $('#cp_exp_copy').addEventListener('click', async () => {
+            if (!expBlob) return;
+            try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': expBlob })]); toast('已复制'); }
+            catch (e) { toast('复制失败，请长按图片保存'); }
+        });
+
+        // 图片裁剪 / 调整大小
+        let crop = null;
+        const cropSrc = () => S.srcImg || S.img;
+        const cropRect = () => {
+            const src = cropSrc(), W = imgW(src), H = imgH(src);
+            let r = W / H;
+            if (crop.ratio !== 'orig') { const [a, b] = crop.ratio.split(':').map(Number); r = a / b; }
+            const bw = Math.min(W, H * r), bh = bw / r, cw = bw / crop.zoom, ch = bh / crop.zoom;
+            return { x: clamp(crop.cx * W - cw / 2, 0, W - cw), y: clamp(crop.cy * H - ch / 2, 0, H - ch), w: cw, h: ch };
+        };
+        const drawCrop = () => {
+            const src = cropSrc(), r = cropRect(), cc = $('#cp_crop_cv');
+            const k = Math.min(320 / r.w, 320 / r.h);
+            cc.width = Math.max(1, Math.round(r.w * k)); cc.height = Math.max(1, Math.round(r.h * k));
+            cc.getContext('2d').drawImage(src, r.x, r.y, r.w, r.h, 0, 0, cc.width, cc.height);
+        };
+        const resetCrop = () => {
+            crop = { ratio: 'orig', zoom: 1, cx: 0.5, cy: 0.5, out: 1600 };
+            $('#cp_crop_ratio').value = 'orig'; $('#cp_crop_zoom').value = 1; $('#cp_crop_out').value = '1600';
+            drawCrop();
+        };
+        $('#cp_cropbtn').addEventListener('click', () => {
+            if (!S.img) setImage(makePlaceholder());
+            if (!S.srcImg) S.srcImg = S.img;
+            $('#cp_crop').style.display = 'flex';
+            resetCrop();
+        });
+        $('#cp_crop_ratio').addEventListener('input', e => { crop.ratio = e.target.value; drawCrop(); });
+        $('#cp_crop_zoom').addEventListener('input', e => { crop.zoom = Number(e.target.value); drawCrop(); });
+        $('#cp_crop_out').addEventListener('input', e => { crop.out = Number(e.target.value); });
+        $('#cp_crop_reset').addEventListener('click', resetCrop);
+        $('#cp_crop_cancel').addEventListener('click', () => { $('#cp_crop').style.display = 'none'; });
+        $('#cp_crop_ok').addEventListener('click', () => {
+            const src = cropSrc(), r = cropRect();
+            const k = Math.min(1, crop.out / Math.max(r.w, r.h));
+            const o = document.createElement('canvas');
+            o.width = Math.max(1, Math.round(r.w * k)); o.height = Math.max(1, Math.round(r.h * k));
+            o.getContext('2d').drawImage(src, r.x, r.y, r.w, r.h, 0, 0, o.width, o.height);
+            setImage(o, true);
+            $('#cp_crop').style.display = 'none';
+            render();
+        });
+        let cd = null;
+        const ccv = $('#cp_crop_cv');
+        ccv.style.touchAction = 'none';
+        ccv.addEventListener('pointerdown', e => { cd = { sx: e.clientX, sy: e.clientY, cx: crop.cx, cy: crop.cy }; try { ccv.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ } });
+        ccv.addEventListener('pointermove', e => {
+            if (!cd) return;
+            const src = cropSrc(), r = cropRect(), rc = ccv.getBoundingClientRect();
+            crop.cx = clamp(cd.cx - (e.clientX - cd.sx) * (r.w / rc.width) / imgW(src), 0, 1);
+            crop.cy = clamp(cd.cy - (e.clientY - cd.sy) * (r.h / rc.height) / imgH(src), 0, 1);
+            drawCrop();
+        });
+        const cEnd = () => { cd = null; };
+        ccv.addEventListener('pointerup', cEnd); ccv.addEventListener('pointercancel', cEnd);
 
         // 字体 / 预设 / 模板导入
         $('#cp_fontimp').addEventListener('click', () => pickFile('.ttf,.otf,.woff,.woff2', async f => {
@@ -878,8 +1959,8 @@
             if (!tpl.onDown) return;
             const [x, y] = canvasXY(e);
             const before = tpl.snap ? tpl.snap() : null;
-            if (tpl.onDown(x, y, params())) {
-                if (before !== null) { S.undo.push(before); if (S.undo.length > 60) S.undo.shift(); }
+            if (tpl.onDown(x, y, params(), ui)) {
+                if (before !== null) pushUndo(before);
                 try { cv.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
                 e.preventDefault();
                 render();
@@ -889,24 +1970,45 @@
             const tpl = curTpl();
             if (!tpl.onMove || !S.drag) return;
             const [x, y] = canvasXY(e);
-            if (tpl.onMove(x, y, params())) scheduleRender();
+            if (tpl.onMove(x, y, params(), ui)) scheduleRender();
         });
-        const up = () => { const tpl = curTpl(); if (tpl.onUp) tpl.onUp(); else S.drag = null; };
+        const up = () => { const tpl = curTpl(); if (tpl.onUp) tpl.onUp(); else S.drag = null; render(); };
         cv.addEventListener('pointerup', up);
         cv.addEventListener('pointercancel', up);
+
+        // 按住标题栏可以拖动整个面板
+        const head = $('.cp_head');
+        let pd = null;
+        head.addEventListener('pointerdown', e => {
+            if (e.target.closest('button')) return;
+            pd = { sx: e.clientX, sy: e.clientY, ox: panelPos.x, oy: panelPos.y };
+            try { head.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        });
+        head.addEventListener('pointermove', e => {
+            if (!pd) return;
+            const mx = window.innerWidth / 2 - 40, my = window.innerHeight / 2 - 30;
+            panelPos.x = clamp(pd.ox + e.clientX - pd.sx, -mx, mx);
+            panelPos.y = clamp(pd.oy + e.clientY - pd.sy, -my, my);
+            $('#cp_panel').style.transform = `translate(${panelPos.x}px,${panelPos.y}px)`;
+        });
+        const endDrag = () => { pd = null; };
+        head.addEventListener('pointerup', endDrag);
+        head.addEventListener('pointercancel', endDrag);
 
         buildControls();
     }
 
-    function closePanel() { overlay.classList.remove('open'); document.body.style.overflow = ''; }
+    function closePanel() { overlay.classList.remove('open'); document.body.style.overflow = ''; ['#cp_exp', '#cp_crop'].forEach(q => { const e = overlay.querySelector(q); if (e) e.style.display = 'none'; }); }
 
     function openPanel(text) {
         if (!overlay) buildPanel();
         if (typeof text === 'string' && text.trim()) {
             S.text = text.trim();
             $('#cp_text').value = S.text;
-            S.keep = null; S.slots = new Set();
+            S.keep = null; S.slots = new Set(); S.cloze = { order: [] };
         }
+        panelPos.x = 0; panelPos.y = 0;
+        $('#cp_panel').style.transform = '';
         overlay.classList.add('open');
         document.body.style.overflow = 'hidden';
         render();
