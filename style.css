@@ -13,7 +13,7 @@
 
 #cp_overlay {
     position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; height: 100dvh;
-    z-index: 99999; display: none; padding: 0;
+    z-index: 99999; display: none; padding: 18px;
     background: rgba(0,0,0,.25);
     -webkit-backdrop-filter: blur(5px); backdrop-filter: blur(5px);
     align-items: center; justify-content: center;
@@ -22,7 +22,7 @@
 
 /* 毛玻璃面板（整体收小） */
 #cp_panel {
-    width: min(1120px, 100%); height: min(820px, 100%); margin: auto;
+    width: min(920px, 100%); height: min(780px, 100%); margin: auto;
     display: flex; flex-direction: column; overflow: hidden; font-size: 12.5px; line-height: 1.4;
     color: var(--SmartThemeBodyColor, #eee);
     background: rgba(25,25,35,.42);
@@ -95,7 +95,7 @@
 
 /* 竖屏：上图下设置 */
 @media (max-width: 900px), (max-aspect-ratio: 1/1) {
-    #cp_overlay { padding: 0; }
+    #cp_overlay { padding: 12px; }
     #cp_panel .cp_body { flex-direction: column; }
     #cp_panel .cp_side { flex: 0 0 38%; border-left: 0; border-top: 1px solid rgba(255,255,255,.1); }
 }

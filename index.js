@@ -20,27 +20,10 @@
         };
     }
     function toast(msg) { if (window.toastr) window.toastr.info(msg); else alert(msg); }
-    let downloadSeq = 0;
-    async function download(blob, name) {
-        // 每次生成独立 URL，并把链接短暂挂载到 DOM；避免移动端第二次点击失效
-        const url = URL.createObjectURL(blob);
+    function download(blob, name) {
         const a = document.createElement('a');
-        a.href = url;
-        const dot = name.lastIndexOf('.');
-        const base = dot > 0 ? name.slice(0, dot) : name;
-        const ext = dot > 0 ? name.slice(dot) : '.png';
-        a.download = base + '_' + (++downloadSeq) + ext;
-        a.rel = 'noopener';
-        a.style.position = 'fixed'; a.style.left = '-9999px';
-        document.body.appendChild(a);
-        try {
-            a.click();
-            // iOS/Safari 对异步释放 Blob URL 较敏感，延长保留时间
-            await new Promise(resolve => setTimeout(resolve, 1200));
-        } finally {
-            a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 60000);
-        }
+        a.href = URL.createObjectURL(blob); a.download = name; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     }
 
     /* ---------- 设置 ---------- */
@@ -92,14 +75,15 @@
 
     /* ---------- 文字处理 ---------- */
     const CJK = '\\u3400-\\u9fff\\u3000-\\u303f\\uff00-\\uffef';
-    const TOKEN_RE = new RegExp(`[${CJK}]|[^\\s${CJK}{}]+`, 'g');
+    const TOKEN_RE = new RegExp(`\\{\\s*\\}|[${CJK}]|[^\\s${CJK}{]+|\\{`, 'g');
     let segmenter = null;
     function tokenizeLine(line, gran) {
         const out = [];
         if (gran === 'word' && window.Intl && Intl.Segmenter) {
             segmenter ??= new Intl.Segmenter(['zh', 'en'], { granularity: 'word' });
-            for (const part of [line.replace(/\{\s*\}/g, '')]) {
+            for (const part of line.split(/(\{\s*\})/)) {
                 if (!part) continue;
+                if (/^\{\s*\}$/.test(part)) { out.push({ t: part, slot: true, sp: false }); continue; }
                 for (const sg of segmenter.segment(part)) {
                     const t = sg.segment;
                     if (/^\s+$/.test(t)) { if (out.length) out[out.length - 1].sp = true; continue; }
@@ -231,9 +215,8 @@
      * ===================================================== */
     // 洞只存中心点；大小/形状是全局参数，拖滑杆时所有洞实时变化
     function holeGeom(P, h, IW, IH) {
-        const w = (h.size || P.size) / 100;
-        const aspect = h.aspect || P.aspect;
-        const hp = ((P.shape === 'rect' || P.shape === 'ellipse') ? (IW * w) / Math.max(0.2, aspect) : IW * w) / IH;
+        const w = P.size / 100;
+        const hp = ((P.shape === 'rect' || P.shape === 'ellipse') ? (IW * w) / Math.max(0.2, P.aspect) : IW * w) / IH;
         return {
             cx: clamp(h.cx, w / 2, 1 - w / 2),
             cy: clamp(h.cy, Math.min(hp / 2, 0.5), Math.max(1 - hp / 2, 0.5)),
@@ -259,19 +242,18 @@
         hint(P) {
             return P.layout === 'slots'
                 ? '点图片：挖洞（再点取消）。点文字：在那里放一个槽位（再点取消）。槽位按文字顺序，依次装入先挖的洞。'
-                : '点图片挖洞；下方碎片可拖动。先点选一块碎片，再用“当前碎片单独大小”调整它的尺寸。';
+                : '点图片：挖洞（再点取消）。下方的碎片可以拖动。';
         },
         defaults: {
             layout: 'below', gran: 'char', shape: 'square', size: 12, aspect: 1.5, lowerPct: 100,
-            bg: '#f1efe6', fg: '#222222', border: false, fontSize: 3.4, font: 'theme', individualSize: 12,
+            bg: '#f1efe6', fg: '#222222', border: false, fontSize: 3.4, font: 'theme',
         },
         controls: [
             { group: '版面', key: 'layout', label: '碎片落点', type: 'select', options: [['below', '下方散落'], ['slots', '文字槽位']] },
             { group: '版面', key: 'gran', label: '文字点选单位', type: 'select', options: [['char', '逐字'], ['word', '按词']], show: P => P.layout === 'slots', onChange() { S.slots = new Set(); } },
             { group: '版面', key: 'lowerPct', label: '下方区域高度 %', type: 'range', min: 40, max: 160, step: 5, show: P => P.layout === 'below' },
             { group: '形状', key: 'shape', label: '洞的形状', type: 'select', options: [['square', '方形'], ['circle', '圆形'], ['rect', '长方形'], ['ellipse', '椭圆'], ['diamond', '菱形'], ['triangle', '三角'], ['star', '星形'], ['heart', '爱心']] },
-            { group: '形状', key: 'size', label: '新碎片默认大小 %', type: 'range', min: 3, max: 40, step: 1 },
-            { group: '形状', key: 'individualSize', label: '当前碎片单独大小 %', type: 'range', min: 3, max: 60, step: 1, onChange(v) { const h = S.cut.holes[S.selectedHole]; if (h) h.size = v; } },
+            { group: '形状', key: 'size', label: '洞的大小 %', type: 'range', min: 3, max: 40, step: 1 },
             { group: '形状', key: 'aspect', label: '长宽比(长方形/椭圆)', type: 'range', min: 0.4, max: 3, step: 0.1 },
             { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 1.5, max: 6, step: 0.1, show: P => P.layout === 'slots' },
             { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS, show: P => P.layout === 'slots' },
@@ -306,7 +288,6 @@
                 const h = S.hits[k];
                 if (h.kind === 'frag' && inside(h)) {
                     const ho = S.cut.holes[h.i];
-                    S.selectedHole = h.i; P.individualSize = ho.size || P.size; if (S.ctls.individualSize) S.ctls.individualSize.value = P.individualSize;
                     S.drag = { i: h.i, sx: x, sy: y, ox: ho.ox || 0, oy: ho.oy || 0 };
                     return true;
                 }
@@ -323,8 +304,8 @@
                 const q = holeGeom(P, h, g.w, g.h);
                 return Math.abs(fx - q.cx) <= q.w / 2 && Math.abs(fy - q.cy) <= q.h / 2;
             });
-            if (hit >= 0) { S.selectedHole = hit; P.individualSize = holes[hit].size || P.size; if (S.ctls.individualSize) S.ctls.individualSize.value = P.individualSize; holes.splice(hit, 1); }
-            else { const n = holes.length; holes.push({ cx: fx, cy: fy, ox: 0, oy: 0, size: P.size, aspect: P.aspect }); S.selectedHole = n; P.individualSize = P.size; if (S.ctls.individualSize) S.ctls.individualSize.value = P.size; }
+            if (hit >= 0) holes.splice(hit, 1);
+            else holes.push({ cx: fx, cy: fy, ox: 0, oy: 0 });
             return true;
         },
         onMove(x, y) {
@@ -348,7 +329,7 @@
             toks.push(Object.assign({}, t, { ti: i }));
             if (!t.slot && !t.nl && S.slots.has(i)) toks.push({ t: '{ }', slot: true, sp: true, ti: -1, after: i });
         });
-        const spaceW = mctx.measureText(' ').width;
+        const spaceW = mctx.measureText(' ').width, braceW = mctx.measureText('{').width;
         let slotI = 0;
         const items = toks.map(tk => {
             if (tk.nl) return { nl: true, w: 0 };
@@ -357,7 +338,7 @@
                 let fh = fs * 2.4, fw = g ? fh * (g.w * IW) / (g.h * IH) : fh * 1.4;
                 const cap = W * 0.28;
                 if (fw > cap) { fw = cap; fh = g ? fw * (g.h * IH) / (g.w * IW) : fw / 1.4; }
-                return { slot: true, i, fw, fh, after: tk.after, w: fw + fs * 0.5 + spaceW };
+                return { slot: true, i, fw, fh, after: tk.after, w: braceW * 2 + fw + fs * 0.5 + spaceW };
             }
             return { t: tk.t, ti: tk.ti, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) };
         });
@@ -381,12 +362,14 @@
             l.items.forEach(it => {
                 if (it.nl) return;
                 if (it.slot) {
-                    const fx = x, g = G[it.i];
+                    c.fillStyle = P.fg; c.fillText('{', x, cy);
+                    const fx = x + braceW + fs * 0.25, g = G[it.i];
                     if (g) drawFrag(c, P, g, fx + it.fw / 2, cy, it.fw, it.fh);
                     else {
                         c.save(); c.setLineDash([6, 5]); c.strokeStyle = P.fg;
                         c.strokeRect(fx, cy - it.fh / 2, it.fw, it.fh); c.restore();
                     }
+                    c.fillStyle = P.fg; c.fillText('}', fx + it.fw + fs * 0.25, cy);
                     if (it.after !== undefined) S.hits.push({ kind: 'sslot', i: it.after, x, y, w: it.w, h: l.lh });
                 } else {
                     c.fillStyle = P.fg; c.fillText(it.t, x, cy);
@@ -553,217 +536,12 @@
         onUp() { S.drag = null; },
     };
 
-
-    /* =====================================================
-     * 额外模板：根据参考图扩展的六种版式
-     * ===================================================== */
-    const extraTemplates = [
-        {
-            id: 'river', name: '河流文字排版',
-            hint: '文字沿着蜿蜒的河道重复延伸；可调整重复密度、颜色与留白。',
-            defaults: { bg:'#17251f', fg:'#f1dfbd', fontSize:22, repeat:7, margin:55 },
-            controls: [
-                {group:'排版',key:'repeat',label:'文字重复密度',type:'range',min:2,max:14,step:1},
-                {group:'排版',key:'fontSize',label:'文字大小',type:'range',min:12,max:34,step:1},
-                {group:'排版',key:'margin',label:'边距',type:'range',min:20,max:120,step:5},
-                {group:'颜色',key:'bg',label:'底色',type:'color'},
-                {group:'颜色',key:'fg',label:'文字色',type:'color'}
-            ],
-            render(cv,c,P) {
-                const W=1100,H=1250; cv.width=W;cv.height=H;
-                c.fillStyle=P.bg;c.fillRect(0,0,W,H);
-                c.globalAlpha=.26;c.drawImage(S.img,0,0,W,H);c.globalAlpha=1;
-                c.fillStyle=P.fg;c.font=`bold ${P.fontSize}px Arial`;c.textBaseline='middle';
-                const phrase=(S.text||SAMPLE).replace(/\s+/g,' ').trim()+' ';
-                const lines=Math.ceil(H/(P.fontSize*1.42));
-                for(let r=0;r<lines;r++){
-                    const y=80+r*P.fontSize*1.42;
-                    const wave=Math.sin(r*.22)*190+Math.sin(r*.075)*90;
-                    const start=Math.max(P.margin, W*.52+wave);
-                    const count=Math.ceil((W-start-P.margin)/(P.fontSize*0.55));
-                    const text=(phrase.repeat(P.repeat)).slice(0,Math.max(0,count*3));
-                    c.fillText(text,start,y);
-                }
-                c.save();c.globalCompositeOperation='destination-out';
-                c.beginPath();c.moveTo(0,0);c.bezierCurveTo(270,180,850,170,620,370);
-                c.bezierCurveTo(400,540,970,650,720,820);c.bezierCurveTo(550,1010,250,1020,0,1250);
-                c.lineWidth=105;c.strokeStyle='#000';c.lineCap='round';c.stroke();c.restore();
-                c.save();c.globalAlpha=.95;c.strokeStyle=P.fg;c.lineWidth=5;c.beginPath();
-                c.moveTo(0,0);c.bezierCurveTo(270,180,850,170,620,370);
-                c.bezierCurveTo(400,540,970,650,720,820);c.bezierCurveTo(550,1010,250,1020,0,1250);c.stroke();c.restore();
-            }
-        },
-        {
-            id:'pixeltiles',name:'像素碎片拼贴',
-            hint:'上方保留完整照片，下方以不同大小的像素方块重新拼贴；点击画面可切换方块位置。',
-            defaults:{bg:'#f3f0e7',cols:9,tiles:22,block:68},
-            controls:[
-                {group:'碎片',key:'tiles',label:'碎片数量',type:'range',min:6,max:45,step:1},
-                {group:'碎片',key:'block',label:'基础方块大小',type:'range',min:28,max:130,step:2},
-                {group:'碎片',key:'cols',label:'像素密度',type:'range',min:5,max:16,step:1},
-                {group:'颜色',key:'bg',label:'留白颜色',type:'color'}
-            ],
-            render(cv,c,P){
-                const W=1100,H=1450,top=690;cv.width=W;cv.height=H;c.fillStyle=P.bg;c.fillRect(0,0,W,H);
-                c.drawImage(S.img,0,0,W,top);
-                const rng=mulberry32(913+P.tiles+P.cols), cell=W/P.cols;
-                for(let i=0;i<P.tiles;i++){
-                    const sx=rng()*Math.max(1,imgW(S.img)-cell),sy=rng()*Math.max(1,imgH(S.img)-cell);
-                    const size=P.block*(.42+rng()*1.05),dx=rng()*(W-size),dy=top+60+rng()*(H-top-size-70);
-                    c.drawImage(S.img,sx,sy,cell,cell,dx,dy,size,size);
-                }
-            }
-        },
-        {
-            id:'circles',name:'圆形记忆档案',
-            hint:'上半部聚合圆形照片碎片，下半部铺开完整照片并留下圆形空位。',
-            defaults:{bg:'#f5e9d9',count:34,diameter:58,lower:15},
-            controls:[
-                {group:'圆形碎片',key:'count',label:'圆形数量',type:'range',min:12,max:55,step:1},
-                {group:'圆形碎片',key:'diameter',label:'圆形基础直径',type:'range',min:28,max:100,step:2},
-                {group:'版面',key:'lower',label:'下方留白比例',type:'range',min:0,max:35,step:1},
-                {group:'颜色',key:'bg',label:'纸张颜色',type:'color'}
-            ],
-            render(cv,c,P){
-                const W=1100,H=1500,band=650;cv.width=W;cv.height=H;c.fillStyle=P.bg;c.fillRect(0,0,W,band);
-                const rng=mulberry32(128+P.count);
-                for(let i=0;i<P.count;i++){
-                    const d=P.diameter*(.55+rng()*.8),x=60+rng()*(W-120),y=55+rng()*(band-110);
-                    c.save();c.beginPath();c.arc(x,y,d/2,0,Math.PI*2);c.clip();
-                    const sx=rng()*imgW(S.img),sy=rng()*imgH(S.img);
-                    c.drawImage(S.img,sx,sy,Math.min(d,imgW(S.img)-sx),Math.min(d,imgH(S.img)-sy),x-d/2,y-d/2,d,d);c.restore();
-                    c.strokeStyle='#554b3e';c.lineWidth=2;c.beginPath();c.arc(x,y,d/2,0,Math.PI*2);c.stroke();
-                }
-                const lowerY=band+P.lower*5;c.drawImage(S.img,0,lowerY,W,H-lowerY);
-                c.fillStyle=P.bg;
-                for(let i=0;i<12;i++){const x=80+rng()*(W-160),y=lowerY+40+rng()*(H-lowerY-80),d=36+rng()*36;c.beginPath();c.arc(x,y,d/2,0,Math.PI*2);c.fill();}
-                c.fillStyle='#211b17';c.font='italic 42px Georgia';c.textAlign='center';
-                const words=(S.text||'existem coisas para lamentar').split(/\s+/).slice(0,8).join(' ');
-                c.fillText(words,W/2,band-28);
-            }
-        },
-        {
-            id:'editorial',name:'编辑部时间轴',
-            hint:'左侧为照片，右侧为阶梯式时间轴；文字内容自动拆分为条目。',
-            defaults:{bg:'#c9c9c5',fg:'#111111',title:'THE FUTURE IS OURS',fontSize:24},
-            controls:[
-                {group:'文字',key:'title',label:'主标题',type:'text'},
-                {group:'文字',key:'fontSize',label:'条目字号',type:'range',min:14,max:34,step:1},
-                {group:'颜色',key:'bg',label:'右侧底色',type:'color'},
-                {group:'颜色',key:'fg',label:'文字色',type:'color'}
-            ],
-            render(cv,c,P){
-                const W=1200,H=900,left=570;cv.width=W;cv.height=H;c.fillStyle=P.bg;c.fillRect(0,0,W,H);
-                c.drawImage(S.img,0,0,left,H);
-                c.fillStyle=P.fg;c.textAlign='left';c.font='900 42px Arial';c.fillText(P.title,610,75);
-                const entries=(S.text||'CONCEPT PHOTO #1\\nCONCEPT PHOTO #2\\nSTORY FILM #1\\nALBUM PREVIEW\\nM/V TEASER\\nRELEASE').split(/\n|[;；]/).filter(Boolean);
-                const n=Math.min(entries.length,12);
-                for(let i=0;i<n;i++){
-                    const y=150+i*58,x=600+(i%3)*26;
-                    c.fillStyle='#e7e7e3';c.fillRect(x,y-27,Math.min(570,W-x-24),42);
-                    c.fillStyle=P.fg;c.font=`bold ${P.fontSize}px Arial`;
-                    c.fillText(`${String(i+1).padStart(2,'0')}   ${entries[i].trim().slice(0,42)}`,x+18,y+2);
-                }
-                c.textAlign='right';c.font='bold 82px Arial';c.fillText('LOST',W-35,H-35);
-            }
-        },
-        {
-            id:'archive',name:'档案研究展板',
-            hint:'白纸档案式构图：中央展示主图，四周分布编号、说明和局部细节。',
-            defaults:{bg:'#f7f6f1',fg:'#211f1b',fontSize:18,notes:8},
-            controls:[
-                {group:'版面',key:'notes',label:'档案标注数量',type:'range',min:3,max:14,step:1},
-                {group:'文字',key:'fontSize',label:'说明字号',type:'range',min:12,max:26,step:1},
-                {group:'颜色',key:'bg',label:'纸色',type:'color'},
-                {group:'颜色',key:'fg',label:'文字色',type:'color'}
-            ],
-            render(cv,c,P){
-                const W=1200,H=900;cv.width=W;cv.height=H;c.fillStyle=P.bg;c.fillRect(0,0,W,H);
-                c.fillStyle=P.fg;c.font='italic 18px Georgia';c.fillText('DESIGN AND RESEARCH',42,42);
-                c.drawImage(S.img,340,90,560,610);
-                c.strokeStyle=P.fg;c.lineWidth=1;c.strokeRect(340,90,560,610);
-                const notes=(S.text||SAMPLE).split(/\s+/);
-                c.font=`${P.fontSize}px Georgia`;c.textAlign='left';
-                for(let i=0;i<P.notes;i++){
-                    const x=i%2?930:45,y=125+Math.floor(i/2)*145;
-                    c.fillText(`${String(i+1).padStart(2,'0')}.`,x,y);
-                    const line=notes.slice(i*4,i*4+4).join(' ').slice(0,48)||'Reference detail';
-                    c.fillText(line,x,y+30);
-                    c.beginPath();c.moveTo(x,y+42);c.lineTo(x+210,y+42);c.stroke();
-                }
-                c.font='italic 15px Georgia';c.fillText('FIELD NOTES  /  VISUAL INDEX',45,H-35);
-            }
-        },
-        {
-            id:'network',name:'人物关系网络',
-            hint:'将照片中的人物位置抽象为节点与连线，下方形成故事关系网络。',
-            defaults:{bg:'#145bdc',fg:'#ffffff',nodes:42,labels:7},
-            controls:[
-                {group:'网络',key:'nodes',label:'节点数量',type:'range',min:12,max:75,step:1},
-                {group:'网络',key:'labels',label:'文字标签数量',type:'range',min:2,max:12,step:1},
-                {group:'颜色',key:'bg',label:'网络底色',type:'color'},
-                {group:'颜色',key:'fg',label:'文字色',type:'color'}
-            ],
-            render(cv,c,P){
-                const W=1100,H=1300,top=620;cv.width=W;cv.height=H;
-                c.drawImage(S.img,0,0,W,top);c.fillStyle=P.bg;c.fillRect(0,top,W,H-top);
-                const rng=mulberry32(440+P.nodes),pts=[];
-                for(let i=0;i<P.nodes;i++)pts.push({x:35+rng()*(W-70),y:top+45+rng()*(H-top-90)});
-                c.strokeStyle='rgba(255,255,255,.6)';c.lineWidth=1.5;
-                pts.forEach((p,i)=>{for(let j=i+1;j<Math.min(i+4,pts.length);j++){if(rng()>.35){c.beginPath();c.moveTo(p.x,p.y);c.lineTo(pts[j].x,pts[j].y);c.stroke();}}});
-                pts.forEach((p,i)=>{
-                    const d=16+rng()*22,sx=rng()*imgW(S.img),sy=rng()*imgH(S.img);
-                    c.drawImage(S.img,sx,sy,Math.min(50,imgW(S.img)-sx),Math.min(50,imgH(S.img)-sy),p.x-d/2,p.y-d/2,d,d);
-                    c.strokeStyle=P.fg;c.strokeRect(p.x-d/2,p.y-d/2,d,d);
-                });
-                c.fillStyle=P.fg;c.font='22px Arial';
-                const words=(S.text||'just crossing paths in each other stories').split(/\s+/);
-                for(let i=0;i<P.labels;i++)c.fillText(`(${i+1}) ${words[i]||'stories'}`,50+(i%4)*260,top+70+Math.floor(i/4)*125);
-            }
-        },
-        {
-            id:'skytiles',name:'天空图像嵌字',
-            hint:'把小图像切片嵌入句子中，再以散落的图像碎片填充下方画面。',
-            defaults:{bg:'#e9e9e9',fg:'#171717',fontSize:29,tiles:7},
-            controls:[
-                {group:'文字',key:'fontSize',label:'句子字号',type:'range',min:18,max:42,step:1},
-                {group:'碎片',key:'tiles',label:'图像切片数量',type:'range',min:3,max:12,step:1},
-                {group:'颜色',key:'bg',label:'底色',type:'color'},
-                {group:'颜色',key:'fg',label:'文字色',type:'color'}
-            ],
-            render(cv,c,P){
-                const W=1100,H=1300,top=560;cv.width=W;cv.height=H;c.fillStyle=P.bg;c.fillRect(0,0,W,H);
-                const words=(S.text||SAMPLE).split(/\s+/),line1=words.slice(0,6),line2=words.slice(6,12);
-                c.fillStyle=P.fg;c.font=`${P.fontSize}px Arial`;c.textBaseline='middle';
-                const drawLine=(arr,y)=>{
-                    let x=70;
-                    arr.forEach((w,i)=>{
-                        c.fillText(w,x,y);x+=c.measureText(w+' ').width;
-                        if(i<P.tiles && x<W-150){
-                            const d=42+(i%3)*9,sx=(i*131)%Math.max(1,imgW(S.img)-d),sy=(i*79)%Math.max(1,imgH(S.img)-d);
-                            c.drawImage(S.img,sx,sy,d,d,x,y-d/2,d,d);x+=d+10;
-                        }
-                    });
-                };
-                drawLine(line1,150);drawLine(line2,250);
-                c.drawImage(S.img,0,top,W,H-top);
-                const rng=mulberry32(77+P.tiles);
-                for(let i=0;i<P.tiles;i++){
-                    const d=45+rng()*100,sx=rng()*Math.max(1,imgW(S.img)-d),sy=rng()*Math.max(1,imgH(S.img)-d);
-                    const dx=rng()*(W-d),dy=top+rng()*(H-top-d);
-                    c.fillStyle=P.bg;c.fillRect(dx-5,dy-5,d+10,d+10);
-                    c.drawImage(S.img,sx,sy,d,d,dx,dy,d,d);
-                }
-            }
-        }
-    ];
-
     /* ---------- 模板注册 ---------- */
     function register(t) {
         TEMPLATES[t.id] = t;
         if (overlay) refreshTplSelect();
     }
-    [cutout, blackout, captcha, ...extraTemplates].forEach(t => TEMPLATES[t.id] = t);
+    [cutout, blackout, captcha].forEach(t => TEMPLATES[t.id] = t);
     window.CutoutPoster = {
         register, templates: TEMPLATES,
         util: { S, pathShape, tokenize, wrap, fontFamily, mulberry32, clamp, paintDown, paintMove },
@@ -997,28 +775,6 @@
         $('#cp_customfont').addEventListener('input', e => { getSettings().customFont = e.target.value.trim(); saveSettings(); scheduleRender(); });
 
         overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
-        // 顶栏拖动整个面板（pointer 兼容触屏、鼠标和触控笔）
-        const panel = $('#cp_panel'), head = panel.querySelector('.cp_head');
-        let panelDrag = null;
-        head.style.cursor = 'grab'; head.style.touchAction = 'none';
-        head.addEventListener('pointerdown', e => {
-            if (e.target.closest('button')) return;
-            const r = panel.getBoundingClientRect();
-            panelDrag = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
-            panel.style.position = 'fixed'; panel.style.margin = '0';
-            panel.style.left = r.left + 'px'; panel.style.top = r.top + 'px';
-            panel.style.width = r.width + 'px'; panel.style.height = r.height + 'px';
-            head.setPointerCapture(e.pointerId); head.style.cursor = 'grabbing';
-            e.preventDefault();
-        });
-        head.addEventListener('pointermove', e => {
-            if (!panelDrag) return;
-            panel.style.left = clamp(panelDrag.left + e.clientX - panelDrag.x, 0, innerWidth - panel.offsetWidth) + 'px';
-            panel.style.top = clamp(panelDrag.top + e.clientY - panelDrag.y, 0, innerHeight - panel.offsetHeight) + 'px';
-        });
-        const stopPanelDrag = () => { panelDrag = null; head.style.cursor = 'grab'; };
-        head.addEventListener('pointerup', stopPanelDrag);
-        head.addEventListener('pointercancel', stopPanelDrag);
         $('#cp_close').addEventListener('click', closePanel);
         $('#cp_toggle').addEventListener('click', () => { overlay.classList.toggle('cp_focus'); setTimeout(render, 30); });
         $('#cp_text').addEventListener('input', e => { S.text = e.target.value; S.keep = null; S.slots = new Set(); scheduleRender(); });
@@ -1117,15 +873,6 @@
         }));
 
         // 画布交互
-        cv.addEventListener('wheel', e => {
-            if (curTpl().id !== 'cutout' || !S.cut.holes.length) return;
-            const [x,y] = canvasXY(e);
-            const hit = [...S.hits].reverse().find(h => h.kind === 'frag' && x>=h.x && x<=h.x+h.w && y>=h.y && y<=h.y+h.h);
-            if (!hit) return;
-            const hole = S.cut.holes[hit.i];
-            hole.size = clamp((hole.size || params().size) + (e.deltaY < 0 ? 1 : -1), 3, 60);
-            S.selectedHole = hit.i; e.preventDefault(); scheduleRender();
-        }, {passive:false});
         cv.addEventListener('pointerdown', e => {
             const tpl = curTpl();
             if (!tpl.onDown) return;
