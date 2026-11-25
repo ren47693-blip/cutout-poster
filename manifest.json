@@ -1,11 +1,11 @@
 {
-    "display_name": "文字抽取成图 (Cutout Poster)",
-    "loading_order": 100,
-    "requires": [],
-    "optional": [],
-    "js": "index.js",
-    "css": "style.css",
-    "author": "you",
-    "version": "0.5.0",
-    "homePage": ""
+  "display_name": "文字抽取成图 (Cutout Poster)",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "you",
+  "version": "0.6.0",
+  "homePage": ""
 }

@@ -231,7 +231,7 @@
         text: '', img: null, imgId: 0, hits: [], geo: null,
         cut: { holes: [] }, sel: -1, slots: new Set(), keep: null, cells: null,
         edges: {}, tl: null, boxes: [], tmpBox: null, det: null, noGuides: false,
-        cloze: { order: [], pos: {} }, clozeGeo: null, srcImg: null,
+        cloze: { order: [], pos: {}, holes: {}, selected: -1 }, clozeGeo: null, srcImg: null,
         drag: null, undo: [], ctls: {},
     };
     const TEMPLATES = {};
@@ -1407,11 +1407,14 @@
         id: 'cloze',
         name: '缺字填空',
         hint: '点文字里的字：它变成空格，并出现成字块。按住字块可拖到任意位置，轻点字块可放回原处。',
-        defaults: Object.assign({ palette: 'wine', areaOrder: 'below', tileArea: 'color', textArea: 'color', dim: 25, arrange: 'wave', tileScale: 100, tilt: 40, title: false, fontSize: 4.2, font: 'serif', bottomPct: 90, grain: 20 }, CLOZE_PAL.wine),
+        defaults: Object.assign({ palette: 'wine', areaOrder: 'below', tileArea: 'color', textArea: 'color', dim: 25, arrange: 'wave', tileScale: 100, tilt: 40, title: false, fontSize: 4.2, font: 'serif', bottomPct: 90, grain: 20, blankShape: 'rect', textAlign: 'left', lineGap: 1.5, textMargin: 7 }, CLOZE_PAL.wine),
         controls: [
             { group: '版面', key: 'areaOrder', label: '字块区的位置', type: 'select', options: [['below', '在文字下方'], ['above', '在文字上方']] },
             { group: '版面', key: 'bottomPct', label: '字块区高度 %', type: 'range', min: 40, max: 160, step: 5 },
-            { group: '版面', key: 'title', label: '第一行当标题（居中，不参与挖字）', type: 'checkbox', onChange() { S.cloze = { order: [], pos: {} }; } },
+            { group: '版面', key: 'title', label: '第一行当标题（居中，不参与挖字）', type: 'checkbox', onChange() { S.cloze = { order: [], pos: {}, holes: {}, selected: -1 }; } },
+            { group: '文字排版', key: 'textAlign', label: '文字对齐', type: 'select', options: [['left','靠左'],['center','居中'],['right','靠右']] },
+            { group: '文字排版', key: 'lineGap', label: '行距倍数', type: 'range', min: 1, max: 2.5, step: 0.05 },
+            { group: '文字排版', key: 'textMargin', label: '文字左右边距 %', type: 'range', min: 2, max: 18, step: 1 },
             { group: '背景', key: 'tileArea', label: '字块区背景', type: 'select', options: [['color', '纯色'], ['image', '用图片']] },
             { group: '背景', key: 'textArea', label: '文字区背景', type: 'select', options: [['color', '纯色'], ['image', '用图片']] },
             { group: '背景', key: 'dim', label: '文字区图片压暗 %', type: 'range', min: 0, max: 80, step: 1, show: P => P.textArea === 'image' },
@@ -1419,6 +1422,10 @@
             { group: '字块', key: 'tileScale', label: '字块大小 %', type: 'range', min: 60, max: 180, step: 5 },
             { group: '字块', key: 'tilt', label: '字块倾斜程度', type: 'range', min: 0, max: 100, step: 5 },
             { group: '字块', key: 'resetPos', label: '字块排回默认位置', type: 'button', onClick() { S.cloze.pos = {}; } },
+            { group: '打孔形状', key: 'blankShape', label: '默认打孔形状', type: 'select', options: SHAPE_OPTS },
+            { group: '打孔形状', key: 'selectedShape', label: '选中空格的形状', type: 'select', options: SHAPE_OPTS, show: () => S.cloze.selected >= 0, get: () => { const h = S.cloze.holes?.[S.cloze.selected]; return h?.shape || params().blankShape; }, set: v => { if (S.cloze.selected >= 0) { S.cloze.holes[S.cloze.selected] ||= {}; S.cloze.holes[S.cloze.selected].shape = v; } } },
+            { group: '打孔形状', key: 'selectedW', label: '选中空格宽度 %', type: 'range', min: 50, max: 180, step: 5, show: () => S.cloze.selected >= 0, get: () => S.cloze.holes?.[S.cloze.selected]?.sx || 100, set: v => { if (S.cloze.selected >= 0) { S.cloze.holes[S.cloze.selected] ||= {}; S.cloze.holes[S.cloze.selected].sx = v; } } },
+            { group: '打孔形状', key: 'selectedH', label: '选中空格高度 %', type: 'range', min: 50, max: 180, step: 5, show: () => S.cloze.selected >= 0, get: () => S.cloze.holes?.[S.cloze.selected]?.sy || 100, set: v => { if (S.cloze.selected >= 0) { S.cloze.holes[S.cloze.selected] ||= {}; S.cloze.holes[S.cloze.selected].sy = v; } } },
             { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 2.5, max: 8, step: 0.1 },
             { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
             { group: '颜色', key: 'palette', label: '配色方案', type: 'select', options: [['wine', '酒红'], ['cream', '米色'], ['dusk', '黑夜']], onChange(v) { const pl = CLOZE_PAL[v]; if (pl) Object.entries(pl).forEach(([k, val]) => ui.setParam(k, val)); } },
@@ -1430,12 +1437,12 @@
             { group: '颜色', key: 'tileInk', label: '字块文字色', type: 'color' },
             { group: '质感', key: 'grain', label: '纸张颗粒 %', type: 'range', min: 0, max: 100, step: 5 },
         ],
-        snap() { return JSON.stringify({ o: S.cloze.order, p: S.cloze.pos || {} }); },
-        restore(str) { const d = JSON.parse(str); S.cloze = { order: d.o, pos: d.p || {} }; },
-        clear() { S.cloze = { order: [], pos: {} }; },
+        snap() { return JSON.stringify({ o: S.cloze.order, p: S.cloze.pos || {}, h: S.cloze.holes || {}, s: S.cloze.selected ?? -1 }); },
+        restore(str) { const d = JSON.parse(str); S.cloze = { order: d.o, pos: d.p || {}, holes: d.h || {}, selected: d.s ?? -1 }; },
+        clear() { S.cloze = { order: [], pos: {}, holes: {}, selected: -1 }; },
         render(cv, c, P) {
-            S.cloze ??= { order: [], pos: {} };
-            S.cloze.pos ??= {};
+            S.cloze ??= { order: [], pos: {}, holes: {}, selected: -1 };
+            S.cloze.pos ??= {}; S.cloze.holes ??= {};
             const W = 1200, M = 90, fs = Math.round(W * P.fontSize / 100), fam = fontFamily(P.font);
             mctx.font = `${fs}px ${fam}`;
             const toks = tokenize((S.text || '').trim() || SAMPLE_CLOZE, 'char');
@@ -1444,8 +1451,9 @@
             const mk = (tk, i) => tk.nl ? { nl: true, w: 0 } : { i, t: tk.t, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) };
             const tItems = P.title ? toks.map(mk).filter((it, i) => i < titleEnd) : [];
             const bItems = toks.map(mk).filter((it, i) => !(P.title && i <= titleEnd));
-            const tLines = wrap(tItems, W - 2 * M), bLines = wrap(bItems, W - 2 * M);
-            const lh = fs * 1.5;
+            const sideM = W * P.textMargin / 100;
+            const tLines = wrap(tItems, W - 2 * sideM), bLines = wrap(bItems, W - 2 * sideM);
+            const lh = fs * P.lineGap;
             const textH = Math.round(M * 1.1 + (tLines.length + bLines.length) * lh + M * 0.8);
             const asp = imgH(S.img) / imgW(S.img);
             const tileH = P.tileArea === 'image' ? Math.round(W * asp * P.bottomPct / 100) : Math.round(textH * P.bottomPct / 100);
@@ -1466,10 +1474,10 @@
                 y += lh;
             });
             bLines.forEach(l => {
-                let x = M;
+                let x = P.textAlign === 'center' ? (W - l.w) / 2 : P.textAlign === 'right' ? W - sideM - l.w : sideM;
                 l.items.forEach(it => {
                     if (it.nl) return;
-                    if (S.cloze.order.includes(it.i)) { c.fillStyle = P.blank; c.fillRect(x, y + lh * 0.06, it.w, lh * 0.9); }
+                    if (S.cloze.order.includes(it.i)) { const cfg = S.cloze.holes?.[it.i] || {}; const bw = it.w * (cfg.sx || 100) / 100, bh = lh * 0.9 * (cfg.sy || 100) / 100; c.fillStyle = P.blank; pathShape(c, cfg.shape || P.blankShape, x + it.w / 2, y + lh / 2, bw, bh); c.fill(); }
                     else { c.fillStyle = P.ink; c.fillText(it.t, x, y + lh / 2); }
                     S.hits.push({ kind: 'chr', i: it.i, x, y, w: it.w, h: lh });
                     x += it.w;
@@ -1480,18 +1488,19 @@
             S.clozeGeo = { tileY, tileH, W, ts };
             S.cloze.order.forEach((idx, k) => {
                 const ch = toks[idx] ? toks[idx].t : '';
+                const cfg = S.cloze.holes?.[idx] || {}; const tileW = ts * (cfg.sx || 100) / 100, tileH2 = ts * (cfg.sy || 100) / 100;
                 const along = n > 1 ? k / (n - 1) : 0.5;
                 let tx, ty;
                 if (P.arrange === 'scatter') { tx = M + ts / 2 + hash(idx * 3 + 7) * (W - 2 * M - ts); ty = tileY + ts / 2 + hash(idx * 3 + 9) * Math.max(1, tileH - ts); }
                 else { tx = M + ts / 2 + (W - 2 * M - ts) * along; ty = cyB + (P.arrange === 'wave' ? Math.sin(k * 0.9) * tileH * 0.28 : 0); }
                 const ps = S.cloze.pos[idx];
                 if (ps) { tx = ps.fx * W; ty = tileY + ps.fy * tileH; }
-                tx = clamp(tx, ts / 2, W - ts / 2); ty = clamp(ty, tileY + ts / 2, tileY + tileH - ts / 2);
+                tx = clamp(tx, tileW / 2, W - tileW / 2); ty = clamp(ty, tileY + tileH2 / 2, tileY + tileH - tileH2 / 2);
                 c.save(); c.translate(tx, ty); c.rotate((hash(idx + 5) - 0.5) * (P.tilt / 100) * 0.35);
-                c.fillStyle = P.tileBg; c.fillRect(-ts / 2, -ts / 2, ts, ts);
+                c.fillStyle = P.tileBg; pathShape(c, cfg.shape || P.blankShape, 0, 0, tileW, tileH2); c.fill();
                 c.fillStyle = P.tileInk; c.font = `${ts * 0.76}px ${fam}`; c.textAlign = 'center'; c.fillText(ch, 0, 0);
                 c.restore();
-                S.hits.push({ kind: 'tile', idx, x: tx - ts / 2, y: ty - ts / 2, w: ts, h: ts });
+                S.hits.push({ kind: 'tile', idx, x: tx - tileW / 2, y: ty - tileH2 / 2, w: tileW, h: tileH2 });
             });
             applyGrain(c, W, cv.height, P.grain);
         },
@@ -1500,12 +1509,14 @@
             for (let k = S.hits.length - 1; k >= 0; k--) {
                 const h = S.hits[k];
                 if (h.kind === 'tile' && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) {
-                    S.drag = { tile: h.idx, sx: x, sy: y, cx: h.x + h.w / 2, cy: h.y + h.h / 2, moved: false };
+                    S.drag = { tile: h.idx, sx: x, sy: y, cx: h.x + h.w / 2, cy: h.y + h.h / 2, w: h.w, h: h.h, moved: false };
                     return true;
                 }
             }
             const h = S.hits.find(h => h.kind === 'chr' && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
             if (!h) return false;
+            S.cloze.selected = h.i;
+            S.cloze.holes ??= {};
             const has = S.cloze.order.includes(h.i);
             S.cloze.order = has ? S.cloze.order.filter(v => v !== h.i) : [...S.cloze.order, h.i];
             S.drag = { cloze: true, val: !has };
@@ -1518,7 +1529,7 @@
                 if (!g) return false;
                 if (Math.hypot(x - d.sx, y - d.sy) > 6) d.moved = true;
                 if (d.moved) {
-                    const nx = clamp(d.cx + (x - d.sx), g.ts / 2, g.W - g.ts / 2), ny = clamp(d.cy + (y - d.sy), g.tileY + g.ts / 2, g.tileY + g.tileH - g.ts / 2);
+                    const nx = clamp(d.cx + (x - d.sx), d.w / 2, g.W - d.w / 2), ny = clamp(d.cy + (y - d.sy), g.tileY + d.h / 2, g.tileY + g.tileH - d.h / 2);
                     S.cloze.pos[d.tile] = { fx: nx / g.W, fy: (ny - g.tileY) / g.tileH };
                 }
                 return true;
@@ -1710,7 +1721,14 @@
             } else {
                 input = document.createElement('input'); input.type = ct.type === 'color' ? 'color' : 'text'; input.value = P[ct.key];
             }
+            let rangeTouch = null, ignoreRangeTouch = false;
+            if (ct.type === 'range') {
+                input.addEventListener('pointerdown', e => { rangeTouch = { x: e.clientX, y: e.clientY, id: e.pointerId }; ignoreRangeTouch = false; });
+                input.addEventListener('pointermove', e => { if (rangeTouch && rangeTouch.id === e.pointerId && Math.abs(e.clientY - rangeTouch.y) > Math.abs(e.clientX - rangeTouch.x) + 7) ignoreRangeTouch = true; });
+                ['pointerup', 'pointercancel'].forEach(ev => input.addEventListener(ev, () => { rangeTouch = null; ignoreRangeTouch = false; }));
+            }
             input.addEventListener('input', () => {
+                if (ct.type === 'range' && ignoreRangeTouch) return;
                 const v = ct.type === 'range' ? Number(input.value) : ct.type === 'checkbox' ? input.checked : input.value;
                 if (ct.set) ct.set(v, params());
                 else { params()[ct.key] = v; saveSettings(); }
@@ -1867,7 +1885,7 @@
         overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
         $('#cp_close').addEventListener('click', closePanel);
         $('#cp_toggle').addEventListener('click', () => { overlay.classList.toggle('cp_focus'); setTimeout(render, 30); });
-        $('#cp_text').addEventListener('input', e => { S.text = e.target.value; S.keep = null; S.slots = new Set(); S.cloze = { order: [], pos: {} }; scheduleRender(); });
+        $('#cp_text').addEventListener('input', e => { S.text = e.target.value; S.keep = null; S.slots = new Set(); S.cloze = { order: [], pos: {}, holes: {}, selected: -1 }; scheduleRender(); });
         overlay.querySelectorAll('.cp_tabs button').forEach(b => b.addEventListener('click', () => {
             overlay.querySelectorAll('.cp_tabs button').forEach(x => x.classList.toggle('on', x === b));
             overlay.querySelectorAll('.cp_pane').forEach(p => { p.style.display = p.dataset.pane === b.dataset.tab ? '' : 'none'; });
