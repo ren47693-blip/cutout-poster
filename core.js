@@ -1,4 +1,4 @@
-/* 文字抽取成图 (Cutout Poster) v1.0 —— core.js
+/* 文字抽取成图 (Cutout Poster) v1.1 —— core.js
  * 公共工具 / 运行时状态 / 形状路径 / 图片加载
  * 本文件创建全局命名空间 window.__CP，供 templates.js 和 panel.js 使用。
  * 加载顺序必须是 core → templates → panel。
@@ -261,7 +261,8 @@
         capImgs: [],
         vinylImgs: {},
         wsGrid: null, wsSeed: 1, wsMark: new Set(), wsGeo: null, wsImg: null,
-        cloze: null, clozeGeo: null, srcImg: null, closed: new Set(),
+        cloze: null, clozeGeo: null, srcImg: null,
+        opened: new Set(),            // 被展开过的分组（默认全部折叠）
         drag: null, undo: [], ctls: {}, cards: [],
     };
     const TEMPLATES = {};
@@ -492,6 +493,19 @@
         return normalizeShape(pts);
     }
 
+    /* ---------- 从一张图里截一块，返回新的 canvas ---------- */
+    function cropToCanvas(img, fx0, fy0, fx1, fy1, maxSide) {
+        const W = imgW(img), H = imgH(img);
+        const x = Math.max(0, Math.min(fx0, fx1) * W), y = Math.max(0, Math.min(fy0, fy1) * H);
+        const w = Math.max(1, Math.abs(fx1 - fx0) * W), h = Math.max(1, Math.abs(fy1 - fy0) * H);
+        const k = Math.min(1, (maxSide || 1200) / Math.max(w, h));
+        const o = document.createElement('canvas');
+        o.width = Math.max(1, Math.round(w * k));
+        o.height = Math.max(1, Math.round(h * k));
+        o.getContext('2d').drawImage(img, x, y, w, h, 0, 0, o.width, o.height);
+        return o;
+    }
+
     /* ---------- 示例文字 ---------- */
     const SAMPLES = {
         cloze: '夫天地者，万物之逆旅也；\n光阴者，百代之过客也。\n而浮生若梦，为欢几何？',
@@ -549,7 +563,7 @@
     window.__CP = {
         EXT, SAMPLE, SAMPLES,
         getCtx, clamp, mulberry32, toast, download, hash, roundRect,
-        holeInnerShadow, setDropShadow,
+        holeInnerShadow, setDropShadow, cropToCanvas,
         getSettings, saveSettings, dbAll, dbPut,
         tokenize, tokenizeLine, wrap, mctx, textBlock, textLines, unitsOf, romanize,
         importedFonts, FONT_OPTS, fontFamily, loadSavedFonts,
