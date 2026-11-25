@@ -231,7 +231,7 @@
         text: '', img: null, imgId: 0, hits: [], geo: null,
         cut: { holes: [] }, sel: -1, slots: new Set(), keep: null, cells: null,
         edges: {}, tl: null, boxes: [], tmpBox: null, det: null, noGuides: false,
-        cloze: { order: [], pos: {} }, clozeGeo: null, srcImg: null,
+        cloze: newCloze(), clozeGeo: null, srcImg: null, closed: new Set(),
         drag: null, undo: [], ctls: {},
     };
     const TEMPLATES = {};
@@ -1396,8 +1396,56 @@
 
 
     /* =====================================================
-     * 模板 9：缺字填空（挖掉的字变成字块，位置可自己拖；背景可换成图片）
+     * 模板 8：缺字填空（空洞形状/大小可自定义，字块可拖动，文字排版可调）
      * ===================================================== */
+    function newCloze() { return { order: [], pos: {}, bs: {}, ts: {}, rot: {}, sel: -1 }; }
+    function clozeRemove(i) {
+        const Z = S.cloze;
+        Z.order = Z.order.filter(v => v !== i);
+        delete Z.pos[i]; delete Z.bs[i]; delete Z.ts[i]; delete Z.rot[i];
+        if (Z.sel === i) Z.sel = -1;
+    }
+    const clozeSel = () => !!(S.cloze && S.cloze.sel >= 0 && S.cloze.order.includes(S.cloze.sel));
+    // 文字排版：横排（靠左/居中/靠右/两端对齐）或竖排（从右往左）
+    function clozeLayout(items, P, W, fs, y0, isTitle) {
+        const out = [], lg = fs * P.letterGap / 100, M = W * P.marginX / 100;
+        if (isTitle || P.dir !== 'v') {
+            const lh = fs * (isTitle ? 1.5 : P.lineGap);
+            const lines = wrap(items.map(it => it.nl ? it : Object.assign({}, it, { w: it.w + lg })), W - 2 * M);
+            let y = y0;
+            lines.forEach((l, li) => {
+                const real = l.items.filter(it => !it.nl);
+                const lineW = real.reduce((s0, it) => s0 + it.w, 0) - (real.length ? lg : 0);
+                const endsPara = l.items.some(it => it.nl) || li === lines.length - 1;
+                const al = isTitle ? 'center' : P.align;
+                let x = al === 'center' ? (W - lineW) / 2 : al === 'right' ? W - M - lineW : M, gap = 0;
+                if (al === 'justify' && !endsPara && real.length > 1) gap = (W - 2 * M - lineW) / (real.length - 1);
+                real.forEach(it => {
+                    const cw = it.w - lg;
+                    out.push({ i: it.i, t: it.t, cx: x + cw / 2, cy: y + lh / 2, w: cw, h: lh, title: isTitle });
+                    x += it.w + gap;
+                });
+                y += lh;
+            });
+            return { placed: out, h: lines.length * lh };
+        }
+        const colW = fs * P.lineGap, step = fs * 1.08 + lg, rows = Math.max(1, Math.round(P.perCol));
+        const cols = [];
+        let cur = [];
+        for (const it of items) {
+            if (it.nl) { cols.push(cur); cur = []; continue; }
+            if (cur.length >= rows) { cols.push(cur); cur = []; }
+            cur.push(it);
+        }
+        if (cur.length) cols.push(cur);
+        const blockW = cols.length * colW;
+        const bx = P.align === 'left' ? M : P.align === 'right' ? W - M - blockW : (W - blockW) / 2;
+        cols.forEach((col, k) => {
+            const cx = bx + blockW - (k + 0.5) * colW;
+            col.forEach((it, j) => out.push({ i: it.i, t: it.t, cx, cy: y0 + (j + 0.5) * step, w: fs * 1.05, h: step, title: false }));
+        });
+        return { placed: out, h: rows * step };
+    }
     const CLOZE_PAL = {
         wine: { top: '#6b1a1f', ink: '#ffffff', blank: '#efe9e1', bottom: '#ece8e0', tileBg: '#6b1a1f', tileInk: '#ffffff' },
         cream: { top: '#d9d0bf', ink: '#111111', blank: '#7b2a2e', bottom: '#7b2a2e', tileBg: '#e9e2d0', tileInk: '#111111' },
@@ -1406,47 +1454,79 @@
     const cloze = {
         id: 'cloze',
         name: '缺字填空',
-        hint: '点文字里的字：它变成空格，并出现成字块。按住字块可拖到任意位置，轻点字块可放回原处。',
-        defaults: Object.assign({ palette: 'wine', areaOrder: 'below', tileArea: 'color', textArea: 'color', dim: 25, arrange: 'wave', tileScale: 100, tilt: 40, title: false, fontSize: 4.2, font: 'serif', bottomPct: 90, grain: 20 }, CLOZE_PAL.wine),
+        hint: '点字：变成空洞并出现字块。再点一下选中的字放回；选中后到「元素」页单独调它的空洞/字块大小。按住字块可拖动位置。',
+        defaults: Object.assign({
+            palette: 'wine', areaOrder: 'below', tileArea: 'color', textArea: 'color', dim: 25, bottomPct: 90, title: false,
+            fontSize: 4.2, font: 'serif', dir: 'h', perCol: 8, align: 'left', lineGap: 1.5, letterGap: 0, marginX: 7.5, padTop: 8, padBottom: 6,
+            shape: 'rect', aspect: 0.85, blankSize: 100, tileScale: 100, arrange: 'wave', tilt: 40, grain: 20,
+        }, CLOZE_PAL.wine),
         controls: [
             { group: '版面', key: 'areaOrder', label: '字块区的位置', type: 'select', options: [['below', '在文字下方'], ['above', '在文字上方']] },
             { group: '版面', key: 'bottomPct', label: '字块区高度 %', type: 'range', min: 40, max: 160, step: 5 },
-            { group: '版面', key: 'title', label: '第一行当标题（居中，不参与挖字）', type: 'checkbox', onChange() { S.cloze = { order: [], pos: {} }; } },
+            { group: '版面', key: 'title', label: '第一行当标题（居中，不参与挖字）', type: 'checkbox', onChange() { S.cloze = newCloze(); } },
             { group: '背景', key: 'tileArea', label: '字块区背景', type: 'select', options: [['color', '纯色'], ['image', '用图片']] },
             { group: '背景', key: 'textArea', label: '文字区背景', type: 'select', options: [['color', '纯色'], ['image', '用图片']] },
             { group: '背景', key: 'dim', label: '文字区图片压暗 %', type: 'range', min: 0, max: 80, step: 1, show: P => P.textArea === 'image' },
-            { group: '字块', key: 'arrange', label: '默认排列', type: 'select', options: [['row', '一排'], ['wave', '波浪'], ['scatter', '散落']] },
-            { group: '字块', key: 'tileScale', label: '字块大小 %', type: 'range', min: 60, max: 180, step: 5 },
-            { group: '字块', key: 'tilt', label: '字块倾斜程度', type: 'range', min: 0, max: 100, step: 5 },
-            { group: '字块', key: 'resetPos', label: '字块排回默认位置', type: 'button', onClick() { S.cloze.pos = {}; } },
             { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 2.5, max: 8, step: 0.1 },
             { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
+            { group: '文字排版', key: 'dir', label: '文字方向', type: 'select', options: [['h', '横排'], ['v', '竖排（从右往左）']] },
+            { group: '文字排版', key: 'perCol', label: '竖排：每列几个字', type: 'range', min: 3, max: 24, step: 1, show: P => P.dir === 'v' },
+            { group: '文字排版', key: 'align', label: '对齐方式', type: 'select', options: [['left', '靠左'], ['center', '居中'], ['right', '靠右'], ['justify', '两端对齐（仅横排）']] },
+            { group: '文字排版', key: 'lineGap', label: '行距（竖排=列距）', type: 'range', min: 1, max: 3, step: 0.05 },
+            { group: '文字排版', key: 'letterGap', label: '字距 %', type: 'range', min: 0, max: 80, step: 1 },
+            { group: '文字排版', key: 'marginX', label: '左右边距 %', type: 'range', min: 2, max: 30, step: 0.5 },
+            { group: '文字排版', key: 'padTop', label: '上边距 %', type: 'range', min: 2, max: 30, step: 0.5 },
+            { group: '文字排版', key: 'padBottom', label: '下边距 %', type: 'range', min: 2, max: 30, step: 0.5 },
+            { group: '形状', key: 'shape', label: '空洞和字块的形状', type: 'select', options: SHAPE_OPTS },
+            { group: '形状', key: 'aspect', label: '长宽比(长方形/椭圆)', type: 'range', min: 0.4, max: 3, step: 0.05, show: P => P.shape === 'rect' || P.shape === 'ellipse' },
+            { group: '形状', key: 'drawShape', label: '手绘一个自定义形状', type: 'button', noUndo: true, onClick() { ui.openShapePad(); } },
+            { group: '形状', key: 'imgShape', label: '用图片做形状', type: 'button', noUndo: true, onClick() { ui.pickShapeImage(); } },
+            { group: '形状', key: 'delShape', label: '删除这个自定义形状', type: 'button', noUndo: true, show: P => String(P.shape).startsWith('custom:'), onClick(P) { ui.deleteCustomShape(P.shape); } },
+            { group: '大小', key: 'blankSize', label: '空洞的默认大小 %', type: 'range', min: 40, max: 300, step: 5 },
+            { group: '大小', key: 'tileScale', label: '字块的默认大小 %', type: 'range', min: 60, max: 220, step: 5 },
+            { group: '大小', key: 'allSizes', label: '所有大小改回默认', type: 'button', onClick() { S.cloze.bs = {}; S.cloze.ts = {}; } },
+            { group: '选中的字', key: 'selBlank', label: '空洞大小 %', type: 'range', min: 30, max: 400, step: 5, show: clozeSel,
+              get(P) { return clozeSel() ? (S.cloze.bs[S.cloze.sel] ?? P.blankSize) : undefined; },
+              set(v) { if (clozeSel()) S.cloze.bs[S.cloze.sel] = v; } },
+            { group: '选中的字', key: 'selTile', label: '字块大小 %', type: 'range', min: 40, max: 300, step: 5, show: clozeSel,
+              get(P) { return clozeSel() ? (S.cloze.ts[S.cloze.sel] ?? P.tileScale) : undefined; },
+              set(v) { if (clozeSel()) S.cloze.ts[S.cloze.sel] = v; } },
+            { group: '选中的字', key: 'selTileRot', label: '字块角度', type: 'range', min: -180, max: 180, step: 5, show: clozeSel,
+              get() { return clozeSel() ? (S.cloze.rot[S.cloze.sel] ?? 0) : undefined; },
+              set(v) { if (clozeSel()) S.cloze.rot[S.cloze.sel] = v; } },
+            { group: '选中的字', key: 'selRestore', label: '放回这个字', type: 'button', show: clozeSel, onClick() { clozeRemove(S.cloze.sel); } },
+            { group: '字块', key: 'arrange', label: '字块默认排列', type: 'select', options: [['row', '一排'], ['wave', '波浪'], ['scatter', '散落']] },
+            { group: '字块', key: 'tilt', label: '字块默认倾斜程度', type: 'range', min: 0, max: 100, step: 5 },
+            { group: '字块', key: 'resetPos', label: '字块排回默认位置', type: 'button', onClick() { S.cloze.pos = {}; } },
             { group: '颜色', key: 'palette', label: '配色方案', type: 'select', options: [['wine', '酒红'], ['cream', '米色'], ['dusk', '黑夜']], onChange(v) { const pl = CLOZE_PAL[v]; if (pl) Object.entries(pl).forEach(([k, val]) => ui.setParam(k, val)); } },
             { group: '颜色', key: 'top', label: '文字区底色', type: 'color' },
             { group: '颜色', key: 'ink', label: '文字颜色', type: 'color' },
-            { group: '颜色', key: 'blank', label: '空格颜色', type: 'color' },
+            { group: '颜色', key: 'blank', label: '空洞颜色', type: 'color' },
             { group: '颜色', key: 'bottom', label: '字块区底色', type: 'color' },
             { group: '颜色', key: 'tileBg', label: '字块底色', type: 'color' },
             { group: '颜色', key: 'tileInk', label: '字块文字色', type: 'color' },
             { group: '质感', key: 'grain', label: '纸张颗粒 %', type: 'range', min: 0, max: 100, step: 5 },
         ],
-        snap() { return JSON.stringify({ o: S.cloze.order, p: S.cloze.pos || {} }); },
-        restore(str) { const d = JSON.parse(str); S.cloze = { order: d.o, pos: d.p || {} }; },
-        clear() { S.cloze = { order: [], pos: {} }; },
+        snap() { const Z = S.cloze; return JSON.stringify({ o: Z.order, p: Z.pos, b: Z.bs, t: Z.ts, r: Z.rot }); },
+        restore(str) { const d = JSON.parse(str); S.cloze = Object.assign(newCloze(), { order: d.o, pos: d.p || {}, bs: d.b || {}, ts: d.t || {}, rot: d.r || {} }); },
+        clear() { S.cloze = newCloze(); },
         render(cv, c, P) {
-            S.cloze ??= { order: [], pos: {} };
-            S.cloze.pos ??= {};
-            const W = 1200, M = 90, fs = Math.round(W * P.fontSize / 100), fam = fontFamily(P.font);
+            const Z = (S.cloze ??= newCloze());
+            Z.pos ??= {}; Z.bs ??= {}; Z.ts ??= {}; Z.rot ??= {};
+            if (Z.sel === undefined) Z.sel = -1;
+            const W = 1200, fs = Math.round(W * P.fontSize / 100), fam = fontFamily(P.font);
             mctx.font = `${fs}px ${fam}`;
             const toks = tokenize((S.text || '').trim() || SAMPLE_CLOZE, 'char');
             const titleEnd = P.title ? toks.findIndex(t => t.nl) : -1;
             const spaceW = mctx.measureText(' ').width;
-            const mk = (tk, i) => tk.nl ? { nl: true, w: 0 } : { i, t: tk.t, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) };
-            const tItems = P.title ? toks.map(mk).filter((it, i) => i < titleEnd) : [];
-            const bItems = toks.map(mk).filter((it, i) => !(P.title && i <= titleEnd));
-            const tLines = wrap(tItems, W - 2 * M), bLines = wrap(bItems, W - 2 * M);
-            const lh = fs * 1.5;
-            const textH = Math.round(M * 1.1 + (tLines.length + bLines.length) * lh + M * 0.8);
+            const all = toks.map((tk, i) => tk.nl ? { nl: true, w: 0 } : { i, t: tk.t, w: mctx.measureText(tk.t).width + (tk.sp ? spaceW : 0) });
+            const tItems = P.title ? all.filter((it, i) => i < titleEnd) : [];
+            const bItems = all.filter((it, i) => !(P.title && i <= titleEnd));
+            const padT = W * P.padTop / 100, padB = W * P.padBottom / 100;
+            const tl = clozeLayout(tItems, P, W, fs, padT, true);
+            const gapT = tl.h ? fs * 0.4 : 0;
+            const bl = clozeLayout(bItems, P, W, fs, padT + tl.h + gapT, false);
+            const textH = Math.round(padT + tl.h + gapT + bl.h + padB);
             const asp = imgH(S.img) / imgW(S.img);
             const tileH = P.tileArea === 'image' ? Math.round(W * asp * P.bottomPct / 100) : Math.round(textH * P.bottomPct / 100);
             const above = P.areaOrder === 'above';
@@ -1458,85 +1538,84 @@
             };
             bg(P.textArea, P.top, 0, textY, W, textH, P.dim);
             bg(P.tileArea, P.bottom, 0, tileY, W, tileH, 0);
-            c.font = `${fs}px ${fam}`; c.textBaseline = 'middle'; c.textAlign = 'left';
-            let y = textY + M * 1.1;
-            tLines.forEach(l => {
-                let x = (W - l.w) / 2;
-                l.items.forEach(it => { if (it.nl) return; c.fillStyle = P.ink; c.fillText(it.t, x, y + lh / 2); x += it.w; });
-                y += lh;
+            const ratio = shapeRatio({ shape: P.shape, aspect: P.aspect });
+            const placed = tl.placed.concat(bl.placed);
+            c.font = `${fs}px ${fam}`; c.textBaseline = 'middle'; c.textAlign = 'center';
+            placed.forEach(q => {
+                if (!q.title && Z.order.includes(q.i)) return;
+                c.fillStyle = P.ink; c.fillText(q.t, q.cx, q.cy + textY);
             });
-            bLines.forEach(l => {
-                let x = M;
-                l.items.forEach(it => {
-                    if (it.nl) return;
-                    if (S.cloze.order.includes(it.i)) { c.fillStyle = P.blank; c.fillRect(x, y + lh * 0.06, it.w, lh * 0.9); }
-                    else { c.fillStyle = P.ink; c.fillText(it.t, x, y + lh / 2); }
-                    S.hits.push({ kind: 'chr', i: it.i, x, y, w: it.w, h: lh });
-                    x += it.w;
-                });
-                y += lh;
+            placed.forEach(q => {
+                if (q.title) return;
+                S.hits.push({ kind: 'chr', i: q.i, x: q.cx - q.w / 2, y: q.cy + textY - q.h / 2, w: q.w, h: q.h });
+                if (!Z.order.includes(q.i)) return;
+                const bsz = fs * 1.15 * (Z.bs[q.i] ?? P.blankSize) / 100;
+                c.save(); pathShape(c, P.shape, q.cx, q.cy + textY, bsz, bsz * ratio); c.fillStyle = P.blank; c.fill(); c.restore();
+                if (!S.noGuides && Z.sel === q.i) drawRing(c, P, q.cx, q.cy + textY, bsz, bsz * ratio, 0);
             });
-            const n = S.cloze.order.length, ts = fs * 1.25 * P.tileScale / 100, cyB = tileY + tileH / 2;
-            S.clozeGeo = { tileY, tileH, W, ts };
-            S.cloze.order.forEach((idx, k) => {
+            // 字块
+            const n = Z.order.length, base = fs * 1.25 * P.tileScale / 100, cyB = tileY + tileH / 2, M = W * P.marginX / 100;
+            S.clozeGeo = { tileY, tileH, W };
+            Z.order.forEach((idx, k) => {
                 const ch = toks[idx] ? toks[idx].t : '';
+                const tsz = fs * 1.25 * (Z.ts[idx] ?? P.tileScale) / 100, th = tsz * ratio;
                 const along = n > 1 ? k / (n - 1) : 0.5;
                 let tx, ty;
-                if (P.arrange === 'scatter') { tx = M + ts / 2 + hash(idx * 3 + 7) * (W - 2 * M - ts); ty = tileY + ts / 2 + hash(idx * 3 + 9) * Math.max(1, tileH - ts); }
-                else { tx = M + ts / 2 + (W - 2 * M - ts) * along; ty = cyB + (P.arrange === 'wave' ? Math.sin(k * 0.9) * tileH * 0.28 : 0); }
-                const ps = S.cloze.pos[idx];
+                if (P.arrange === 'scatter') { tx = M + base / 2 + hash(idx * 3 + 7) * Math.max(1, W - 2 * M - base); ty = tileY + base / 2 + hash(idx * 3 + 9) * Math.max(1, tileH - base); }
+                else { tx = M + base / 2 + (W - 2 * M - base) * along; ty = cyB + (P.arrange === 'wave' ? Math.sin(k * 0.9) * tileH * 0.28 : 0); }
+                const ps = Z.pos[idx];
                 if (ps) { tx = ps.fx * W; ty = tileY + ps.fy * tileH; }
-                tx = clamp(tx, ts / 2, W - ts / 2); ty = clamp(ty, tileY + ts / 2, tileY + tileH - ts / 2);
-                c.save(); c.translate(tx, ty); c.rotate((hash(idx + 5) - 0.5) * (P.tilt / 100) * 0.35);
-                c.fillStyle = P.tileBg; c.fillRect(-ts / 2, -ts / 2, ts, ts);
-                c.fillStyle = P.tileInk; c.font = `${ts * 0.76}px ${fam}`; c.textAlign = 'center'; c.fillText(ch, 0, 0);
+                tx = clamp(tx, tsz / 2, W - tsz / 2); ty = clamp(ty, tileY + th / 2, tileY + tileH - th / 2);
+                const rotDeg = Z.rot[idx] !== undefined ? Z.rot[idx] : (hash(idx + 5) - 0.5) * (P.tilt / 100) * 0.35 * 180 / Math.PI;
+                c.save(); c.translate(tx, ty); c.rotate(rotDeg * Math.PI / 180);
+                pathShape(c, P.shape, 0, 0, tsz, th); c.fillStyle = P.tileBg; c.fill();
+                c.fillStyle = P.tileInk; c.font = `${Math.min(tsz, th) * 0.72}px ${fam}`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(ch, 0, 0);
                 c.restore();
-                S.hits.push({ kind: 'tile', idx, x: tx - ts / 2, y: ty - ts / 2, w: ts, h: ts });
+                if (!S.noGuides && Z.sel === idx) drawRing(c, P, tx, ty, tsz, th, rotDeg);
+                S.hits.push({ kind: 'tile', idx, x: tx - tsz / 2, y: ty - th / 2, w: tsz, h: th });
             });
             applyGrain(c, W, cv.height, P.grain);
         },
         onDown(x, y) {
-            S.cloze ??= { order: [], pos: {} };
+            const Z = (S.cloze ??= newCloze());
             for (let k = S.hits.length - 1; k >= 0; k--) {
                 const h = S.hits[k];
                 if (h.kind === 'tile' && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) {
-                    S.drag = { tile: h.idx, sx: x, sy: y, cx: h.x + h.w / 2, cy: h.y + h.h / 2, moved: false };
+                    S.drag = { tile: h.idx, sx: x, sy: y, cx: h.x + h.w / 2, cy: h.y + h.h / 2, hw: h.w, hh: h.h, moved: false, was: Z.sel === h.idx };
+                    Z.sel = h.idx;
                     return true;
                 }
             }
             const h = S.hits.find(h => h.kind === 'chr' && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
             if (!h) return false;
-            const has = S.cloze.order.includes(h.i);
-            S.cloze.order = has ? S.cloze.order.filter(v => v !== h.i) : [...S.cloze.order, h.i];
-            S.drag = { cloze: true, val: !has };
+            if (!Z.order.includes(h.i)) { Z.order = [...Z.order, h.i]; Z.sel = h.i; S.drag = { cloze: true, val: true }; return true; }
+            if (Z.sel !== h.i) { Z.sel = h.i; S.drag = null; return true; }       // 先选中
+            clozeRemove(h.i); S.drag = { cloze: true, val: false };                // 再点一次放回
             return true;
         },
         onMove(x, y) {
-            const d = S.drag, g = S.clozeGeo;
+            const d = S.drag, g = S.clozeGeo, Z = S.cloze;
             if (!d) return false;
             if (d.tile !== undefined) {
                 if (!g) return false;
                 if (Math.hypot(x - d.sx, y - d.sy) > 6) d.moved = true;
                 if (d.moved) {
-                    const nx = clamp(d.cx + (x - d.sx), g.ts / 2, g.W - g.ts / 2), ny = clamp(d.cy + (y - d.sy), g.tileY + g.ts / 2, g.tileY + g.tileH - g.ts / 2);
-                    S.cloze.pos[d.tile] = { fx: nx / g.W, fy: (ny - g.tileY) / g.tileH };
+                    const nx = clamp(d.cx + (x - d.sx), d.hw / 2, g.W - d.hw / 2), ny = clamp(d.cy + (y - d.sy), g.tileY + d.hh / 2, g.tileY + g.tileH - d.hh / 2);
+                    Z.pos[d.tile] = { fx: nx / g.W, fy: (ny - g.tileY) / g.tileH };
                 }
                 return true;
             }
             if (!d.cloze) return false;
             const h = S.hits.find(h => h.kind === 'chr' && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
             if (!h) return false;
-            const has = S.cloze.order.includes(h.i);
-            if (d.val && !has) { S.cloze.order = [...S.cloze.order, h.i]; return true; }
-            if (!d.val && has) { S.cloze.order = S.cloze.order.filter(v => v !== h.i); return true; }
+            const has = Z.order.includes(h.i);
+            if (d.val && !has) { Z.order = [...Z.order, h.i]; return true; }
+            if (!d.val && has) { clozeRemove(h.i); return true; }
             return false;
         },
         onUp() {
             const d = S.drag;
-            if (d && d.tile !== undefined && !d.moved) {
-                S.cloze.order = S.cloze.order.filter(v => v !== d.tile);
-                delete S.cloze.pos[d.tile];
-            }
+            if (d && d.tile !== undefined && !d.moved && d.was) clozeRemove(d.tile);
             S.drag = null;
         },
     };
@@ -1638,9 +1717,20 @@
         setParam(key, val) {
             params()[key] = val; saveSettings();
             const el = S.ctls[key];
-            if (el) { if (el.type === 'checkbox') el.checked = val; else el.value = val; }
+            if (el) { if (el.type === 'checkbox') el.checked = val; else el.value = val; if (el._out) el._out.textContent = ' ' + val; }
         },
     };
+    const TABS = [['src', '素材'], ['layout', '版面'], ['elem', '元素'], ['text', '文字'], ['look', '外观'], ['more', '更多']];
+    const GROUP_TAB = {
+        '版面': 'layout', '背景': 'layout', '排字方式': 'layout', '排布': 'layout', '点选': 'layout', '网格': 'layout', '波浪': 'layout', '关系图': 'layout', '画面': 'layout',
+        '形状': 'elem', '大小与角度': 'elem', '大小': 'elem', '选中的字': 'elem', '字块': 'elem', '选区': 'elem',
+        '文字': 'text', '文字排版': 'text',
+        '颜色': 'look', '质感': 'look',
+    };
+    function activateTab(key) {
+        overlay.querySelectorAll('.cp_tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === key));
+        overlay.querySelectorAll('.cp_pane').forEach(pn => { pn.style.display = pn.dataset.pane === key ? '' : 'none'; });
+    }
     function updateVisibility() {
         const tpl = curTpl(), P = params();
         tpl.controls.forEach(ct => {
@@ -1651,8 +1741,31 @@
             const any = [...card.querySelectorAll('.cp_ctl')].some(e => e.style.display !== 'none');
             card.style.display = any ? '' : 'none';
         });
+        // 没有内容的分页标签先隐藏
+        TABS.forEach(([k]) => {
+            if (k === 'src' || k === 'more') return;
+            const pane = overlay.querySelector(`.cp_pane[data-pane="${k}"]`), btn = overlay.querySelector(`.cp_tabs button[data-tab="${k}"]`);
+            if (!pane || !btn) return;
+            const any = [...pane.querySelectorAll('.cp_card')].some(cd => cd.style.display !== 'none');
+            btn.style.display = any ? '' : 'none';
+        });
+        const cur = overlay.querySelector('.cp_tabs button.on');
+        if (cur && cur.style.display === 'none') activateTab('src');
     }
-    function pushUndo(str) { S.undo.push(str); if (S.undo.length > 60) S.undo.shift(); }
+    // 撤销栈：既记画布操作（字符串快照），也记参数改动（对象）——不小心碰到滑杆也能撤销
+    let lastPU = null;
+    function pushUndo(entry) {
+        if (typeof entry === 'string') lastPU = null;
+        S.undo.push(entry);
+        if (S.undo.length > 60) S.undo.shift();
+    }
+    function recordParamUndo(tplId, key, old) {
+        const now = Date.now();
+        if (lastPU && lastPU.key === key && lastPU.tpl === tplId && now - lastPU.t < 1500) { lastPU.t = now; return; }
+        lastPU = { key, tpl: tplId, t: now };
+        S.undo.push({ p: true, tpl: tplId, key, val: old });
+        if (S.undo.length > 60) S.undo.shift();
+    }
     function syncControls() {
         const tpl = curTpl(), P = params();
         tpl.controls.forEach(ct => {
@@ -1665,16 +1778,65 @@
             if (el._out) el._out.textContent = ' ' + v;
         });
     }
+    // 防误触滑杆：只有按住圆点左右拖才会改值；点轨道不动；上下滑动是滚动页面，不会改值
+    function makeSlider(min, max, step, value) {
+        const el = document.createElement('div');
+        el.className = 'cp_sl';
+        const mkBtn = t => { const b = document.createElement('button'); b.type = 'button'; b.className = 'cp_sl_step'; b.textContent = t; return b; };
+        const dec = mkBtn('−'), inc = mkBtn('+');
+        const track = document.createElement('div'); track.className = 'cp_sl_track';
+        const rail = document.createElement('div'); rail.className = 'cp_sl_rail';
+        const fill = document.createElement('div'); fill.className = 'cp_sl_fill';
+        const thumb = document.createElement('div'); thumb.className = 'cp_sl_thumb';
+        track.append(rail, fill, thumb);
+        el.append(dec, track, inc);
+        const snapV = v => { v = clamp(Number(v), min, max); const k = Math.round((v - min) / step); return +(min + k * step).toFixed(4); };
+        let cur = snapV(value);
+        const paint = () => { const pc = max > min ? (cur - min) / (max - min) * 100 : 0; fill.style.width = pc + '%'; thumb.style.left = pc + '%'; };
+        const fire = () => el.dispatchEvent(new Event('input'));
+        const setVal = (v, emit) => { v = snapV(v); if (v === cur) return; cur = v; paint(); if (emit) fire(); };
+        Object.defineProperty(el, 'value', { get: () => String(cur), set: v => { cur = snapV(v); paint(); } });
+        paint();
+        dec.addEventListener('click', () => setVal(cur - step, true));
+        inc.addEventListener('click', () => setVal(cur + step, true));
+        let d = null;
+        thumb.addEventListener('pointerdown', e => {
+            const r = track.getBoundingClientRect();
+            d = { sx: e.clientX, sy: e.clientY, v0: cur, w: Math.max(1, r.width), on: false };
+            try { thumb.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        });
+        thumb.addEventListener('pointermove', e => {
+            if (!d) return;
+            const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
+            if (!d.on) { if (Math.abs(dx) > 6 && Math.abs(dx) > Math.abs(dy) * 1.2) d.on = true; else return; }
+            setVal(d.v0 + dx / d.w * (max - min), true);
+        });
+        thumb.addEventListener('pointerup', () => { d = null; });
+        thumb.addEventListener('pointercancel', () => { if (d && d.v0 !== cur) setVal(d.v0, true); d = null; });
+        return el;
+    }
     function buildControls() {
-        const tpl = curTpl(), P = params(), box = $('#cp_dyn');
-        box.innerHTML = ''; S.ctls = {}; S.cards = [];
-        let card = null, lastGroup = null;
+        const tpl = curTpl(), P = params();
+        TABS.forEach(([k]) => {
+            if (k === 'src' || k === 'more') return;
+            const pane = overlay.querySelector(`.cp_pane[data-pane="${k}"]`);
+            if (pane) pane.innerHTML = '';
+        });
+        S.ctls = {}; S.cards = [];
+        const cardMap = new Map();
         tpl.controls.forEach(ct => {
-            const g = ct.group || '参数';
-            if (g !== lastGroup) {
+            const g = ct.group || '参数', tab = GROUP_TAB[g] || 'layout', ck = tab + '|' + g;
+            let card = cardMap.get(ck);
+            if (!card) {
                 card = document.createElement('div'); card.className = 'cp_card';
-                const t = document.createElement('div'); t.className = 'cp_ct'; t.textContent = g;
-                card.append(t); box.append(card); S.cards.push(card); lastGroup = g;
+                const head = document.createElement('div'); head.className = 'cp_ct cp_ct_dyn'; head.textContent = g;
+                const body = document.createElement('div'); body.className = 'cp_cb';
+                const key2 = tpl.id + '|' + g;
+                if (S.closed.has(key2)) card.classList.add('closed');
+                head.addEventListener('click', () => { card.classList.toggle('closed'); if (S.closed.has(key2)) S.closed.delete(key2); else S.closed.add(key2); });
+                card.append(head, body); card._body = body;
+                overlay.querySelector(`.cp_pane[data-pane="${tab}"]`).append(card);
+                cardMap.set(ck, card); S.cards.push(card);
             }
             if (ct.type === 'button') {
                 const w = document.createElement('div'); w.className = 'cp_ctl';
@@ -1685,10 +1847,10 @@
                     ct.onClick(params());
                     render();
                 });
-                S.ctls[ct.key] = b; w.append(b); card.append(w);
+                S.ctls[ct.key] = b; w.append(b); card._body.append(w);
                 return;
             }
-            const wrap = document.createElement('label');
+            const wrap = document.createElement(ct.type === 'range' ? 'div' : 'label');   // 滑杆不用 label，避免点到文字误触 +/- 按钮
             wrap.className = 'cp_ctl' + (ct.type === 'checkbox' ? ' cp_inline' : '');
             const span = document.createElement('span');
             span.textContent = ct.label;
@@ -1699,9 +1861,7 @@
                 opts.forEach(([v, l]) => input.add(new Option(l, v)));
                 input.value = P[ct.key];
             } else if (ct.type === 'range') {
-                input = document.createElement('input');
-                input.type = 'range'; input.min = ct.min; input.max = ct.max; input.step = ct.step;
-                input.value = ct.get ? (ct.get(P) ?? ct.min) : P[ct.key];
+                input = makeSlider(ct.min, ct.max, ct.step, ct.get ? (ct.get(P) ?? ct.min) : P[ct.key]);
                 const out = document.createElement('b'); out.textContent = ' ' + input.value;
                 span.append(out); input._out = out;
                 input.addEventListener('input', () => { out.textContent = ' ' + input.value; });
@@ -1712,6 +1872,8 @@
             }
             input.addEventListener('input', () => {
                 const v = ct.type === 'range' ? Number(input.value) : ct.type === 'checkbox' ? input.checked : input.value;
+                const old = ct.get ? ct.get(params()) : params()[ct.key];
+                if (old !== undefined) recordParamUndo(tpl.id, ct.key, old);
                 if (ct.set) ct.set(v, params());
                 else { params()[ct.key] = v; saveSettings(); }
                 if (ct.onChange) ct.onChange(v);
@@ -1719,7 +1881,7 @@
             });
             S.ctls[ct.key] = input;
             wrap.append(span, input);
-            card.append(wrap);
+            card._body.append(wrap);
         });
         updateVisibility();
     }
@@ -1764,47 +1926,56 @@
           </div>
           <div class="cp_body">
             <div class="cp_preview"><div class="cp_stage"><canvas id="cp_canvas"></canvas></div></div>
+            <div class="cp_grip" id="cp_grip" title="拖动调整预览/设置的大小；双击恢复"><span></span></div>
             <div class="cp_side">
               <div id="cp_hint"></div>
               <div class="cp_tabs">
-                <button data-tab="a" class="on">内容</button>
-                <button data-tab="b">样式</button>
-                <button data-tab="c">更多</button>
+                <button data-tab="src" class="on">素材</button>
+                <button data-tab="layout">版面</button>
+                <button data-tab="elem">元素</button>
+                <button data-tab="text">文字</button>
+                <button data-tab="look">外观</button>
+                <button data-tab="more">更多</button>
               </div>
-              <div class="cp_pane" data-pane="a">
-                <div class="cp_card">
-                  <div class="cp_ct">模板</div>
-                  <select id="cp_tpl"></select>
-                </div>
-                <div class="cp_card">
-                  <div class="cp_ct">文字</div>
-                  <textarea id="cp_text" rows="4" placeholder="${SAMPLE}"></textarea>
-                </div>
-                <div class="cp_card">
-                  <div class="cp_ct">图片</div>
-                  <div class="cp_row">
-                    <button id="cp_upload" class="cp_btn">上传</button>
-                    <button id="cp_avatar" class="cp_btn">角色头像</button>
-                    <button id="cp_bg" class="cp_btn">聊天背景</button>
+              <div class="cp_panes">
+                <div class="cp_pane" data-pane="src">
+                  <div class="cp_card">
+                    <div class="cp_ct">模板</div>
+                    <select id="cp_tpl"></select>
                   </div>
-                  <div class="cp_row"><input type="text" id="cp_url" placeholder="图片 URL"><button id="cp_urlgo" class="cp_btn">载入</button></div>
-                  <div class="cp_row"><button id="cp_cropbtn" class="cp_btn">裁剪 / 调整大小</button></div>
-                </div>
-              </div>
-              <div class="cp_pane" data-pane="b" style="display:none"><div id="cp_dyn"></div></div>
-              <div class="cp_pane" data-pane="c" style="display:none">
-                <div class="cp_card">
-                  <div class="cp_ct">字体</div>
-                  <div class="cp_row"><button id="cp_fontimp" class="cp_btn">导入字体文件</button></div>
-                  <label class="cp_ctl"><span>自己输入字体名（字体选“自己输入”时生效）</span><input type="text" id="cp_customfont" placeholder="例如：LXGW WenKai"></label>
-                </div>
-                <div class="cp_card">
-                  <div class="cp_ct">预设与模板</div>
-                  <div class="cp_row">
-                    <button id="cp_presetout" class="cp_btn">导出预设</button>
-                    <button id="cp_presetin" class="cp_btn">导入预设</button>
+                  <div class="cp_card">
+                    <div class="cp_ct">文字内容</div>
+                    <textarea id="cp_text" rows="4" placeholder="${SAMPLE}"></textarea>
                   </div>
-                  <div class="cp_row"><button id="cp_tplimp" class="cp_btn">导入模板脚本(.js)</button></div>
+                  <div class="cp_card">
+                    <div class="cp_ct">图片</div>
+                    <div class="cp_row">
+                      <button id="cp_upload" class="cp_btn">上传</button>
+                      <button id="cp_avatar" class="cp_btn">角色头像</button>
+                      <button id="cp_bg" class="cp_btn">聊天背景</button>
+                    </div>
+                    <div class="cp_row"><input type="text" id="cp_url" placeholder="图片 URL"><button id="cp_urlgo" class="cp_btn">载入</button></div>
+                    <div class="cp_row"><button id="cp_cropbtn" class="cp_btn">裁剪 / 调整大小</button></div>
+                  </div>
+                </div>
+                <div class="cp_pane" data-pane="layout" style="display:none"></div>
+                <div class="cp_pane" data-pane="elem" style="display:none"></div>
+                <div class="cp_pane" data-pane="text" style="display:none"></div>
+                <div class="cp_pane" data-pane="look" style="display:none"></div>
+                <div class="cp_pane" data-pane="more" style="display:none">
+                  <div class="cp_card">
+                    <div class="cp_ct">字体</div>
+                    <div class="cp_row"><button id="cp_fontimp" class="cp_btn">导入字体文件</button></div>
+                    <label class="cp_ctl"><span>自己输入字体名（字体选“自己输入”时生效）</span><input type="text" id="cp_customfont" placeholder="例如：LXGW WenKai"></label>
+                  </div>
+                  <div class="cp_card">
+                    <div class="cp_ct">预设与模板</div>
+                    <div class="cp_row">
+                      <button id="cp_presetout" class="cp_btn">导出预设</button>
+                      <button id="cp_presetin" class="cp_btn">导入预设</button>
+                    </div>
+                    <div class="cp_row"><button id="cp_tplimp" class="cp_btn">导入模板脚本(.js)</button></div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1867,11 +2038,33 @@
         overlay.addEventListener('mousedown', e => { if (e.target === overlay) closePanel(); });
         $('#cp_close').addEventListener('click', closePanel);
         $('#cp_toggle').addEventListener('click', () => { overlay.classList.toggle('cp_focus'); setTimeout(render, 30); });
-        $('#cp_text').addEventListener('input', e => { S.text = e.target.value; S.keep = null; S.slots = new Set(); S.cloze = { order: [], pos: {} }; scheduleRender(); });
-        overlay.querySelectorAll('.cp_tabs button').forEach(b => b.addEventListener('click', () => {
-            overlay.querySelectorAll('.cp_tabs button').forEach(x => x.classList.toggle('on', x === b));
-            overlay.querySelectorAll('.cp_pane').forEach(p => { p.style.display = p.dataset.pane === b.dataset.tab ? '' : 'none'; });
-        }));
+        $('#cp_text').addEventListener('input', e => { S.text = e.target.value; S.keep = null; S.slots = new Set(); S.cloze = newCloze(); scheduleRender(); });
+        overlay.querySelectorAll('.cp_tabs button').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
+
+        // 预览 / 设置 之间的拖动条：上下（或左右）拖动调整大小，双击恢复默认
+        const grip = $('#cp_grip'), bodyEl = $('.cp_body'), sideEl = $('.cp_side');
+        const isCol = () => { try { return getComputedStyle(bodyEl).flexDirection === 'column'; } catch (e) { return false; } };
+        let gd = false, gTap = 0;
+        grip.addEventListener('pointerdown', e => {
+            const nowT = Date.now();
+            if (nowT - gTap < 320) { sideEl.style.flex = ''; const st = getSettings(); delete st.sideSize; saveSettings(); gTap = 0; return; }
+            gTap = nowT; gd = true;
+            try { grip.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        });
+        grip.addEventListener('pointermove', e => {
+            if (!gd) return;
+            const br = bodyEl.getBoundingClientRect(), col = isCol();
+            let px = col ? br.bottom - e.clientY : br.right - e.clientX;
+            px = clamp(px, 90, Math.max(120, (col ? br.height : br.width) - 110));
+            sideEl.style.flex = `0 0 ${Math.round(px)}px`;
+            const st = getSettings(); (st.sideSize ??= {})[col ? 'col' : 'row'] = Math.round(px);
+        });
+        const gEnd = () => { if (gd) { gd = false; saveSettings(); } };
+        grip.addEventListener('pointerup', gEnd); grip.addEventListener('pointercancel', gEnd);
+        overlay._applySide = () => {
+            const ss = getSettings().sideSize, v = ss && ss[isCol() ? 'col' : 'row'];
+            sideEl.style.flex = v ? `0 0 ${v}px` : '';
+        };
 
         // 图片来源
         $('#cp_upload').addEventListener('click', () => pickFile('image/*', async f => {
@@ -1897,13 +2090,21 @@
         // 顶部工具
         $('#cp_undo').addEventListener('click', () => {
             const tpl = curTpl();
-            if (!S.undo.length || !tpl.restore) return;
-            tpl.restore(S.undo.pop()); render();
+            const e = S.undo.pop();
+            if (e === undefined) return;
+            lastPU = null;
+            if (typeof e === 'string') { if (tpl.restore) tpl.restore(e); }
+            else if (e.p && e.tpl === tpl.id) {
+                const ct = tpl.controls.find(x => x.key === e.key);
+                if (ct && ct.set) ct.set(e.val, params()); else ui.setParam(e.key, e.val);
+                if (ct && ct.onChange) ct.onChange(e.val);
+            }
+            render();
         });
         $('#cp_clear').addEventListener('click', () => {
             const tpl = curTpl();
             if (!tpl.clear) return;
-            if (tpl.snap) S.undo.push(tpl.snap());
+            if (tpl.snap) pushUndo(tpl.snap());
             tpl.clear(); render();
         });
         // 保存：先弹出预览，再下载 / 分享 / 复制（每个按钮都是一次新的点击，不会被浏览器拦截）
@@ -2159,12 +2360,13 @@
         if (typeof text === 'string' && text.trim()) {
             S.text = text.trim();
             $('#cp_text').value = S.text;
-            S.keep = null; S.slots = new Set(); S.cloze = { order: [], pos: {} };
+            S.keep = null; S.slots = new Set(); S.cloze = newCloze();
         }
         panelPos.x = 0; panelPos.y = 0;
         $('#cp_panel').style.transform = '';
         overlay.classList.add('open');
         document.body.style.overflow = 'hidden';
+        if (overlay._applySide) overlay._applySide();
         render();
     }
 

@@ -20,9 +20,9 @@
 }
 #cp_overlay.open { display: flex; }
 
-/* 毛玻璃面板（整体收小） */
+/* 毛玻璃面板 */
 #cp_panel {
-    width: min(920px, 100%); height: min(780px, 100%); margin: auto;
+    width: min(960px, 100%); height: min(800px, 100%); margin: auto;
     display: flex; flex-direction: column; overflow: hidden; font-size: 12.5px; line-height: 1.4;
     color: var(--SmartThemeBodyColor, #eee);
     background: rgba(25,25,35,.42);
@@ -34,7 +34,9 @@
 #cp_panel .cp_head {
     flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center;
     padding: 4px 8px 4px 14px; border-bottom: 1px solid rgba(255,255,255,.1); font-size: 13px;
+    cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
 }
+#cp_panel .cp_head:active { cursor: grabbing; }
 #cp_panel .cp_tools { display: flex; gap: 2px; }
 #cp_panel button.cp_ic {
     width: 32px; height: 30px; padding: 0; display: flex; align-items: center; justify-content: center;
@@ -44,7 +46,7 @@
 #cp_panel button.cp_ic:active { background: rgba(255,255,255,.18); opacity: 1; }
 #cp_panel button.cp_ic svg { pointer-events: none; }
 
-/* 图片区占大头 */
+/* ===== 主体：预览（主角）+ 拖动条 + 设置区 ===== */
 #cp_panel .cp_body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: row; }
 #cp_panel .cp_preview { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; padding: 6px; }
 #cp_panel .cp_stage { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; }
@@ -52,59 +54,86 @@
     width: 100%; height: 100%; object-fit: contain; display: block;
     touch-action: none; cursor: crosshair; filter: drop-shadow(0 3px 12px rgba(0,0,0,.4));
 }
+/* 预览 / 设置 之间的拖动条 */
+#cp_panel .cp_grip { flex: 0 0 14px; display: flex; align-items: center; justify-content: center; cursor: col-resize; touch-action: none; }
+#cp_panel .cp_grip span { width: 4px; height: 44px; border-radius: 2px; background: rgba(255,255,255,.3); }
 
-/* 设置区：提示 + 分页 */
 #cp_panel .cp_side {
-    flex: 0 0 280px; padding: 10px; overflow-y: auto; -webkit-overflow-scrolling: touch;
-    display: flex; flex-direction: column; gap: 8px;
-    border-left: 1px solid rgba(255,255,255,.1); background: rgba(0,0,0,.12);
+    flex: 0 0 340px; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 8px;
+    padding: 10px 10px 10px 4px; background: rgba(0,0,0,.14);
 }
-#cp_hint { font-size: 11.5px; opacity: .7; line-height: 1.5; }
-#cp_panel .cp_tabs { display: flex; gap: 4px; padding: 3px; border-radius: 10px; background: rgba(255,255,255,.07); }
+#cp_hint { flex: 0 0 auto; font-size: 11.5px; opacity: .72; line-height: 1.5; }
+
+/* 功能分页：素材 / 版面 / 元素 / 文字 / 外观 / 更多 */
+#cp_panel .cp_tabs { flex: 0 0 auto; display: flex; gap: 3px; padding: 3px; border-radius: 11px; background: rgba(255,255,255,.08); }
 #cp_panel .cp_tabs button {
-    flex: 1; padding: 5px 0; font-size: 12.5px; color: inherit; cursor: pointer; margin: 0; min-height: 0;
-    background: transparent; border: 0; border-radius: 8px; opacity: .75; box-shadow: none;
+    flex: 1; padding: 7px 0; font-size: 12.5px; color: inherit; cursor: pointer; margin: 0; min-height: 0;
+    background: transparent; border: 0; border-radius: 8px; opacity: .7; box-shadow: none; white-space: nowrap;
 }
-#cp_panel .cp_tabs button.on { background: rgba(255,255,255,.18); opacity: 1; }
-#cp_panel .cp_pane, #cp_dyn { display: flex; flex-direction: column; gap: 8px; }
+#cp_panel .cp_tabs button.on { background: rgba(120,170,255,.28); opacity: 1; font-weight: 600; }
+
+/* 滚动区：内容多时只在这里滚动；overscroll 不会带动外层 */
+#cp_panel .cp_panes { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding-right: 2px; }
+#cp_panel .cp_pane { display: flex; flex-direction: column; gap: 14px; padding-bottom: 24px; }
+
+/* 分区卡片：每个功能一块，标题可点击折叠 */
 #cp_panel .cp_card {
-    display: flex; flex-direction: column; gap: 8px; padding: 9px 10px;
-    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); border-radius: 10px;
+    display: flex; flex-direction: column; gap: 10px; padding: 12px;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); border-radius: 12px;
 }
-#cp_panel .cp_ct { font-size: 11.5px; opacity: .6; letter-spacing: .5px; }
-#cp_panel label.cp_ctl { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; margin: 0; }
-#cp_panel label.cp_ctl.cp_inline { flex-direction: row; align-items: center; justify-content: space-between; }
+#cp_panel .cp_ct {
+    font-size: 12px; font-weight: 600; letter-spacing: .5px; padding-left: 8px;
+    border-left: 3px solid rgba(120,170,255,.85); opacity: .9;
+}
+#cp_panel .cp_ct_dyn { cursor: pointer; }
+#cp_panel .cp_ct_dyn::after { content: '－'; float: right; opacity: .45; padding: 0 4px; }
+#cp_panel .cp_card.closed .cp_ct_dyn::after { content: '＋'; }
+#cp_panel .cp_cb { display: flex; flex-direction: column; gap: 14px; }
+#cp_panel .cp_card.closed .cp_cb { display: none; }
+
+#cp_panel .cp_ctl { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; margin: 0; }
+#cp_panel .cp_ctl.cp_inline { flex-direction: row; align-items: center; justify-content: space-between; }
 #cp_panel .cp_row { display: flex; flex-wrap: wrap; gap: 6px; }
 #cp_panel .cp_row > * { flex: 1; min-width: 0; }
 #cp_panel button.cp_btn {
-    padding: 6px 8px; font-size: 12.5px; color: inherit; cursor: pointer; margin: 0; min-height: 0;
+    padding: 8px; font-size: 12.5px; color: inherit; cursor: pointer; margin: 0; min-height: 0;
     background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16); border-radius: 8px; box-shadow: none;
 }
 #cp_panel button.cp_btn:active { background: rgba(255,255,255,.22); }
 #cp_panel textarea, #cp_panel select, #cp_panel input[type=text] {
-    width: 100%; margin: 0; font-size: 12.5px; color: inherit; padding: 6px 8px; min-height: 0;
+    width: 100%; margin: 0; font-size: 12.5px; color: inherit; padding: 7px 8px; min-height: 0;
     background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16); border-radius: 8px;
 }
 #cp_panel textarea { resize: vertical; line-height: 1.5; }
 #cp_panel select option { color: #000; }
-#cp_panel input[type=range] { width: 100%; margin: 2px 0; height: 18px; }
-#cp_panel input[type=color] { width: 100%; height: 26px; padding: 0; border: 0; background: none; }
+#cp_panel input[type=color] { width: 100%; height: 28px; padding: 0; border: 0; background: none; }
+
+/* 防误触滑杆：只有按住圆点左右拖才会改值；上下滑动是滚动页面 */
+#cp_panel .cp_sl { display: flex; align-items: center; gap: 4px; }
+#cp_panel .cp_sl_step {
+    flex: 0 0 30px; width: 30px; height: 30px; padding: 0; margin: 0; min-height: 0; font-size: 16px; line-height: 1; cursor: pointer;
+    color: inherit; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.16); border-radius: 8px; box-shadow: none;
+}
+#cp_panel .cp_sl_track { position: relative; flex: 1; height: 36px; margin: 0 14px; }
+#cp_panel .cp_sl_rail, #cp_panel .cp_sl_fill { position: absolute; left: 0; top: 50%; height: 5px; margin-top: -2.5px; border-radius: 3px; }
+#cp_panel .cp_sl_rail { right: 0; background: rgba(255,255,255,.2); }
+#cp_panel .cp_sl_fill { background: rgba(120,170,255,.95); width: 0; }
+#cp_panel .cp_sl_thumb { position: absolute; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px; touch-action: pan-y; }
+#cp_panel .cp_sl_thumb::after { content: ''; position: absolute; left: 11px; top: 11px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 5px rgba(0,0,0,.5); }
 
 /* ⚙ 隐藏设置，图片占满 */
-#cp_overlay.cp_focus .cp_side { display: none; }
+#cp_overlay.cp_focus .cp_side, #cp_overlay.cp_focus .cp_grip { display: none; }
 
 /* 竖屏：上图下设置 */
 @media (max-width: 900px), (max-aspect-ratio: 1/1) {
     #cp_overlay { padding: 12px; }
     #cp_panel .cp_body { flex-direction: column; }
-    #cp_panel .cp_side { flex: 0 0 38%; border-left: 0; border-top: 1px solid rgba(255,255,255,.1); }
+    #cp_panel .cp_grip { flex: 0 0 16px; cursor: row-resize; }
+    #cp_panel .cp_grip span { width: 44px; height: 4px; }
+    #cp_panel .cp_side { flex: 0 0 42%; padding: 2px 10px 10px; }
 }
 
-/* 标题栏可拖动整个面板 */
-#cp_panel .cp_head { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
-#cp_panel .cp_head:active { cursor: grabbing; }
-
-/* 保存 / 裁剪弹层 */
+/* 保存 / 裁剪 / 手绘形状 弹层 */
 #cp_exp, #cp_crop, #cp_shape {
     position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: 5; padding: 14px;
     align-items: center; justify-content: center;
@@ -118,12 +147,15 @@
     -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
     border: 1px solid rgba(255,255,255,.2); border-radius: 14px;
 }
-#cp_expimg { width: 100%; max-height: 58vh; object-fit: contain; border-radius: 8px; background: rgba(255,255,255,.06); -webkit-touch-callout: default; user-select: auto; }
+#cp_expimg { width: 100%; max-height: 58vh; object-fit: contain; border-radius: 8px; background: rgba(255,255,255,.06); }
 #cp_crop_cv { align-self: center; max-width: 100%; max-height: 46vh; border-radius: 8px; background: rgba(255,255,255,.06); cursor: grab; }
+#cp_shape_cv { align-self: center; width: min(280px, 100%); aspect-ratio: 1; border-radius: 8px; background: rgba(255,255,255,.06); touch-action: none; }
 #cp_overlay .cp_note { font-size: 11.5px; opacity: .7; line-height: 1.5; }
+#cp_exp .cp_row, #cp_crop .cp_row, #cp_shape .cp_row { display: flex; gap: 6px; }
+#cp_exp .cp_row > *, #cp_crop .cp_row > *, #cp_shape .cp_row > * { flex: 1; }
+#cp_crop .cp_ctl, #cp_crop input[type=range] { width: 100%; }
 
 /* 面板里不允许选中文字（避免手机上冒出系统选择菜单），输入框除外 */
 #cp_overlay { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
 #cp_overlay textarea, #cp_overlay input[type=text] { -webkit-user-select: text; user-select: text; }
 #cp_expimg { -webkit-touch-callout: default; -webkit-user-select: auto; user-select: auto; }
-#cp_shape_cv { align-self: center; width: min(280px, 100%); aspect-ratio: 1; border-radius: 8px; background: rgba(255,255,255,.06); touch-action: none; }
