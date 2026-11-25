@@ -1,7 +1,7 @@
-/* 文字抽取成图 (Cutout Poster) v0.9 —— core.js
+/* 文字抽取成图 (Cutout Poster) v1.0 —— core.js
  * 公共工具 / 运行时状态 / 形状路径 / 图片加载
  * 本文件创建全局命名空间 window.__CP，供 templates.js 和 panel.js 使用。
- * 注意：三个文件共享同一命名空间，加载顺序必须是 core → templates → panel。
+ * 加载顺序必须是 core → templates → panel。
  */
 (() => {
     'use strict';
@@ -253,9 +253,12 @@
     /* ---------- 运行时状态 ---------- */
     const S = {
         text: '', img: null, imgId: 0, hits: [], geo: null,
+        cvW: 1200, cvH: 1200,
         cut: { holes: [] }, sel: -1, slots: new Set(), keep: null, cells: null,
         edges: {}, tl: null, boxes: [], tmpBox: null, det: null, noGuides: false,
-        detPos: {}, detLab: {}, boardImgs: [],
+        detPos: {}, detLab: {}, detLinks: [], detPick: -1,
+        boardImgs: [], boardPts: {}, boardCur: 0, boardGeo: null,
+        capImgs: [],
         vinylImgs: {},
         wsGrid: null, wsSeed: 1, wsMark: new Set(), wsGeo: null, wsImg: null,
         cloze: null, clozeGeo: null, srcImg: null, closed: new Set(),
@@ -306,6 +309,37 @@
         c.arcTo(x, y + h, x, y, r);
         c.arcTo(x, y, x + w, y, r);
         c.closePath();
+    }
+    // 洞的内阴影：裁进洞内，再用一圈带投影的描边，让阴影落在内侧
+    function holeInnerShadow(c, shape, cx, cy, w, h, P) {
+        const amt = clamp((P.holeShadow || 0) / 100, 0, 1);
+        if (amt <= 0) return;
+        const ang = (P.shadowAngle ?? 135) * Math.PI / 180;
+        const off = Math.min(w, h) * 0.12 * amt;
+        const blur = Math.max(2, Math.min(w, h) * 0.22 * amt);
+        c.save();
+        pathShape(c, shape, cx, cy, w, h);
+        c.clip();
+        c.shadowColor = `rgba(0,0,0,${0.55 * amt})`;
+        c.shadowBlur = blur;
+        c.shadowOffsetX = Math.cos(ang) * off;
+        c.shadowOffsetY = Math.sin(ang) * off;
+        c.strokeStyle = 'rgba(0,0,0,1)';
+        c.lineWidth = Math.max(3, blur);
+        pathShape(c, shape, cx, cy, w + c.lineWidth, h + c.lineWidth);
+        c.stroke();
+        c.restore();
+    }
+    // 碎片的外投影：画碎片前调用，调用方负责 save/restore
+    function setDropShadow(c, size, P) {
+        const amt = clamp((P.fragShadow || 0) / 100, 0, 1);
+        if (amt <= 0) return false;
+        const ang = (P.shadowAngle ?? 135) * Math.PI / 180;
+        c.shadowColor = `rgba(0,0,0,${0.5 * amt})`;
+        c.shadowBlur = size * 0.1 * amt + 2;
+        c.shadowOffsetX = Math.cos(ang) * size * 0.05 * amt;
+        c.shadowOffsetY = Math.sin(ang) * size * 0.05 * amt;
+        return true;
     }
 
     /* ---------- 挖洞碎片相关（多个模板共用） ---------- */
@@ -506,35 +540,27 @@
         S.img = im; if (!isCrop) S.srcImg = im;
         S.imgId++;
         S.cut.holes = []; S.sel = -1; S.boxes = [];
-        S.detPos = {}; S.detLab = {}; S.boardImgs = [];
+        S.detPos = {}; S.detLab = {}; S.detLinks = []; S.detPick = -1;
+        S.boardImgs = []; S.boardPts = {}; S.boardCur = 0;
         S.undo = [];
     }
 
     /* ---------- 导出命名空间 ---------- */
     window.__CP = {
         EXT, SAMPLE, SAMPLES,
-        // 工具
         getCtx, clamp, mulberry32, toast, download, hash, roundRect,
+        holeInnerShadow, setDropShadow,
         getSettings, saveSettings, dbAll, dbPut,
-        // 文字
         tokenize, tokenizeLine, wrap, mctx, textBlock, textLines, unitsOf, romanize,
-        // 字体
         importedFonts, FONT_OPTS, fontFamily, loadSavedFonts,
-        // 形状
         pathShape, BASE_SHAPES, SHAPE_OPTS, shapeRatio,
-        // 状态
         S, TEMPLATES, imgW, imgH,
-        // 绘图
         drawCover, applyGrain, RATIOS, RATIO_OPTS,
         holeGeom, drawFrag, drawRing, fillHole,
         paintDown, paintMove,
-        // 自定义形状
         simplifyPts, normalizeShape, largestComponent, traceContour, shapeFromImage,
-        // 图片
         makePlaceholder, loadImage, setImage,
-        // 由 panel.js 填充（模板里调用 ui.xxx 时用到）
-        ui: {},
+        ui: {},   // 由 panel.js 填充
     };
-    // 兼容旧的调试入口
     window.__cpGeo = { traceContour, largestComponent, normalizeShape, simplifyPts };
 })();
