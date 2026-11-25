@@ -3,7 +3,7 @@
     "loading_order": 100,
     "requires": [],
     "optional": [],
-    "js": ["core.js", "templates.js", "panel.js"],
+    "js": "index.js",
     "css": "style.css",
     "author": "you",
     "version": "0.9.0",
