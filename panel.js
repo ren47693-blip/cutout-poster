@@ -1,4 +1,4 @@
-/* 文字抽取成图 (Cutout Poster) v0.9 —— panel.js
+/* 文字抽取成图 (Cutout Poster) v1.0 —— panel.js
  * 面板 UI、交互、入口。依赖 core.js 与 templates.js。
  */
 (() => {
@@ -61,10 +61,10 @@
     const TABS = [['src', '素材'], ['layout', '版面'], ['elem', '元素'], ['text', '文字'], ['look', '外观'], ['more', '更多']];
     const GROUP_TAB = {
         '版面': 'layout', '背景': 'layout', '排字方式': 'layout', '排布': 'layout', '点选': 'layout',
-        '网格': 'layout', '波浪': 'layout', '关系图': 'layout', '画面': 'layout',
+        '网格': 'layout', '波浪': 'layout', '关系图': 'layout', '画面': 'layout', '玩法': 'layout',
         '形状': 'elem', '大小与角度': 'elem', '大小': 'elem', '选中的字': 'elem', '字块': 'elem',
-        '选区': 'elem', '唱片': 'elem', '胶壳': 'elem',
-        '文字': 'text', '文字排版': 'text',
+        '选区': 'elem', '唱片': 'elem', '胶壳': 'elem', '阴影': 'elem', '标注线': 'elem',
+        '文字': 'text', '文字排版': 'text', '附加文字': 'text',
         '颜色': 'look', '质感': 'look',
     };
     function activateTab(key) {
@@ -159,7 +159,7 @@
     }
 
     /* ---------- 控件：每个模板的 DOM 建好就缓存，切换时只换显隐 ---------- */
-    const tplDom = {};          // tplId -> { cards:[], ctls:{} }
+    const tplDom = {};
     function buildControlsFor(tplId) {
         const tpl = TEMPLATES[tplId], P = params();
         const cards = [], ctls = {};
@@ -205,7 +205,6 @@
                 const opts = typeof ct.options === 'function' ? ct.options() : ct.options;
                 opts.forEach(([v, l]) => input.add(new Option(l, v)));
                 input.value = P[ct.key];
-                input._dynOpts = typeof ct.options === 'function' ? ct.options : null;
             } else if (ct.type === 'range') {
                 input = makeSlider(ct.min, ct.max, ct.step, ct.get ? (ct.get(P) ?? ct.min) : P[ct.key]);
                 const out = document.createElement('b'); out.textContent = ' ' + input.value;
@@ -232,7 +231,6 @@
         tplDom[tplId] = { cards, ctls };
         return tplDom[tplId];
     }
-    // 切到某个模板：没建过就建，建过就只切显隐（这是切换变快的关键）
     function useControls(tplId) {
         const dom = tplDom[tplId] || buildControlsFor(tplId);
         Object.entries(tplDom).forEach(([id, d]) => {
@@ -240,7 +238,6 @@
             d.cards.forEach(cd => { cd.style.display = on ? '' : 'none'; });
         });
         S.ctls = dom.ctls; S.cards = dom.cards;
-        // 把当前参数值刷进控件
         const P = params(), tpl = TEMPLATES[tplId];
         tpl.controls.forEach(ct => {
             const el = dom.ctls[ct.key];
@@ -253,7 +250,7 @@
         });
         updateVisibility();
     }
-    // 自定义形状增删、字体导入后，相关下拉要重建选项
+    // 自定义形状增删、字体导入后，动态下拉要重建选项
     function refreshDynOptions() {
         Object.entries(tplDom).forEach(([id, d]) => {
             const tpl = TEMPLATES[id];
@@ -289,6 +286,12 @@
         const inp = document.createElement('input');
         inp.type = 'file'; inp.accept = accept;
         inp.addEventListener('change', () => { if (inp.files[0]) cb(inp.files[0]); });
+        inp.click();
+    }
+    function pickFiles(accept, cb) {
+        const inp = document.createElement('input');
+        inp.type = 'file'; inp.accept = accept; inp.multiple = true;
+        inp.addEventListener('change', () => { if (inp.files.length) cb([...inp.files]); });
         inp.click();
     }
 
@@ -431,11 +434,12 @@
             S.keep = null; S.slots = new Set();
             S.cloze = CP.newCloze ? CP.newCloze() : null;
             S.wsGrid = null; S.wsMark = new Set();
+            S.boardPts = {}; S.boardCur = 0;
             scheduleRender();
         });
         overlay.querySelectorAll('.cp_tabs button').forEach(b => b.addEventListener('click', () => activateTab(b.dataset.tab)));
 
-        // 预览 / 设置 之间的拖动条
+        /* 预览 / 设置 之间的拖动条 */
         const grip = $('#cp_grip'), bodyEl = $('.cp_body'), sideEl = $('.cp_side');
         const isCol = () => { try { return getComputedStyle(bodyEl).flexDirection === 'column'; } catch (e) { return false; } };
         let gd = false, gTap = 0;
@@ -663,7 +667,11 @@
             const [x, y] = canvasXY(e);
             if (tpl.onMove(x, y, params(), ui)) scheduleRender();
         });
-        const up = () => { const tpl = curTpl(); if (tpl.onUp) tpl.onUp(); else S.drag = null; render(); };
+        const up = () => {
+            const tpl = curTpl();
+            if (tpl.onUp) tpl.onUp(params(), ui); else S.drag = null;
+            render();
+        };
         cv.addEventListener('pointerup', up);
         cv.addEventListener('pointercancel', up);
 
@@ -783,8 +791,19 @@
         ui.pickWsImage = () => pickFile('image/*', async f => {
             try {
                 S.wsImg = await loadImage(URL.createObjectURL(f));
-                render(); toast('已换方阵底图');
+                render(); toast('已换藏在底下的图');
             } catch (e) { toast('图片加载失败'); }
+        });
+        // 九宫格：一次上传多张，按格子顺序轮流用
+        ui.addCaptchaImages = () => pickFiles('image/*', async files => {
+            S.capImgs ??= [];
+            let ok = 0;
+            for (const f of files) {
+                try { S.capImgs.push(await loadImage(URL.createObjectURL(f))); ok++; }
+                catch (e) { /* 跳过失败的 */ }
+            }
+            render();
+            toast(ok ? '共 ' + S.capImgs.length + ' 张图' : '图片加载失败');
         });
 
         useControls(getSettings().template);
@@ -804,6 +823,7 @@
             S.keep = null; S.slots = new Set();
             S.cloze = CP.newCloze ? CP.newCloze() : null;
             S.wsGrid = null; S.wsMark = new Set();
+            S.boardPts = {}; S.boardCur = 0;
         }
         panelPos.x = 0; panelPos.y = 0;
         $('#cp_panel').style.transform = '';
