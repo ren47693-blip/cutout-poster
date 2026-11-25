@@ -1,4 +1,4 @@
-/* 文字抽取成图 (Cutout Poster) v0.9 —— templates.js（第 1/2 段）
+/* 文字抽取成图 (Cutout Poster) v1.0 —— templates.js（第 1/2 段）
  * 模板定义。依赖 core.js 创建的 window.__CP。
  */
 (() => {
@@ -11,10 +11,13 @@
         FONT_OPTS, fontFamily, pathShape, SHAPE_OPTS, shapeRatio,
         S, TEMPLATES, imgW, imgH, drawCover, applyGrain, RATIOS, RATIO_OPTS,
         holeGeom, drawFrag, drawRing, fillHole, paintDown, paintMove, ui,
+        holeInnerShadow, setDropShadow,
     } = CP;
 
     /* =====================================================
      * 模板 1：挖洞置换
+     * 洞可加内阴影，碎片可加外投影；洞可以一个都不挖；
+     * 可在图的两侧各加一段与洞无关的文本。
      * ===================================================== */
     const cutout = {
         id: 'cutout',
@@ -26,19 +29,24 @@
                         ? '点文字：在那个字的位置生成一块碎片，碎片浮在上层，可以拖到画面任何地方（文字不会消失）。'
                         : '点文字：这个字会被碎片替换（再点恢复）。槽位按文字顺序装入先挖的洞。');
             }
-            return '点空白处挖洞；点洞选中（在「元素」里调大小、洞的角度、碎片的角度），按住洞可拖动，再点一下选中的洞删除。图外的碎片可以拖动。';
+            return '点空白处挖洞；点洞选中后在「元素」里调大小和角度，按住洞可拖动，再点一下选中的洞删除。一个洞都不挖也可以。图外的碎片可以拖动。想加说明文字就到「附加文字」里写。';
         },
         migrate(P) {
             if (P.layout === 'below') { P.layout = 'panel'; P.side = 'below'; }
             if (P.shape === 'bird') P.shape = 'circle';
             P.slotSide ??= 'below';
             P.slotImgPct ??= 100;
+            P.textA ??= ''; P.textB ??= '';
+            P.textPos ??= 'vert';
+            P.holeShadow ??= 0; P.fragShadow ??= 0; P.shadowAngle ??= 135;
         },
         defaults: {
             layout: 'panel', side: 'below', arrange: 'mirror', panelPct: 100, framePct: 14, spread: 30, gridCols: 6,
             glyph: '', fillGlyph: true, fragScale: 100, gran: 'char', slotMode: 'replace', slotScale: 1.25,
             freeSlot: false, slotOpacity: 100, slotSide: 'below', slotImgPct: 100,
             shape: 'square', aspect: 1.5, size: 12,
+            holeShadow: 0, fragShadow: 0, shadowAngle: 135,
+            textA: '', textB: '', textPos: 'vert', textSizeA: 2.6, textSizeB: 1.6, textAlign: 'center', textFont: 'theme', textColor: '#222222',
             bg: '#f1efe6', fg: '#222222', glyphColor: '#ffffff', border: false, fontSize: 3.4, font: 'theme', grain: 0,
         },
         controls: [
@@ -64,6 +72,9 @@
             { group: '形状', key: 'drawShape', label: '手绘一个自定义形状', type: 'button', noUndo: true, onClick() { ui.openShapePad(); } },
             { group: '形状', key: 'imgShape', label: '用图片做形状（透明底或白底深色图案）', type: 'button', noUndo: true, onClick() { ui.pickShapeImage(); } },
             { group: '形状', key: 'delShape', label: '删除这个自定义形状', type: 'button', noUndo: true, show: P => String(P.shape).startsWith('custom:'), onClick(P) { ui.deleteCustomShape(P.shape); } },
+            { group: '阴影', key: 'holeShadow', label: '洞的内阴影 %（凹下去）', type: 'range', min: 0, max: 100, step: 5 },
+            { group: '阴影', key: 'fragShadow', label: '碎片的投影 %（浮起来）', type: 'range', min: 0, max: 100, step: 5 },
+            { group: '阴影', key: 'shadowAngle', label: '光照方向', type: 'range', min: 0, max: 360, step: 15, show: P => P.holeShadow > 0 || P.fragShadow > 0 },
             { group: '大小与角度', key: 'size', label: '新洞的默认大小 %', type: 'range', min: 3, max: 40, step: 1 },
             { group: '大小与角度', key: 'selSize', label: '选中的洞：大小 %', type: 'range', min: 2, max: 60, step: 1, show: () => S.sel >= 0,
               get(P) { const h = S.cut.holes[S.sel]; return h ? (h.size ?? P.size) : undefined; },
@@ -80,6 +91,14 @@
             { group: '大小与角度', key: 'delSel', label: '删除选中的洞', type: 'button', show: () => S.sel >= 0, onClick() { if (S.sel >= 0) S.cut.holes.splice(S.sel, 1); S.sel = -1; } },
             { group: '大小与角度', key: 'allSize', label: '所有洞改成默认大小', type: 'button', onClick(P) { S.cut.holes.forEach(h => { h.size = P.size; }); } },
             { group: '大小与角度', key: 'resetFree', label: '自由碎片放回默认位置', type: 'button', show: P => P.layout === 'slots' && P.freeSlot, onClick() { S.cut.holes.forEach(h => { delete h.fx; delete h.fy; }); } },
+            { group: '附加文字', key: 'textPos', label: '文字放在图的哪两边', type: 'select', options: [['vert', '上方 / 下方'], ['horiz', '左边 / 右边']], show: P => P.layout !== 'slots' },
+            { group: '附加文字', key: 'textA', label: '文字一（上方 / 左边）', type: 'text', show: P => P.layout !== 'slots' },
+            { group: '附加文字', key: 'textB', label: '文字二（下方 / 右边）', type: 'text', show: P => P.layout !== 'slots' },
+            { group: '附加文字', key: 'textSizeA', label: '文字一大小', type: 'range', min: 0.8, max: 7, step: 0.1, show: P => P.layout !== 'slots' && !!P.textA },
+            { group: '附加文字', key: 'textSizeB', label: '文字二大小', type: 'range', min: 0.8, max: 7, step: 0.1, show: P => P.layout !== 'slots' && !!P.textB },
+            { group: '附加文字', key: 'textAlign', label: '对齐', type: 'select', options: [['center', '居中'], ['left', '靠左'], ['right', '靠右']], show: P => P.layout !== 'slots' && (!!P.textA || !!P.textB) },
+            { group: '附加文字', key: 'textFont', label: '字体', type: 'select', options: FONT_OPTS, show: P => P.layout !== 'slots' && (!!P.textA || !!P.textB) },
+            { group: '附加文字', key: 'textColor', label: '颜色', type: 'color', show: P => P.layout !== 'slots' && (!!P.textA || !!P.textB) },
             { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 1.5, max: 6, step: 0.1, show: P => P.layout === 'slots' },
             { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS, show: P => P.layout === 'slots' || (P.layout === 'panel' && P.arrange === 'glyph') },
             { group: '颜色', key: 'bg', label: '底色/洞色', type: 'color' },
@@ -103,6 +122,27 @@
                 applyGrain(c, cv.width, cv.height, P.grain);
                 return;
             }
+            // 附加文字：先算出它们占的空间
+            const tfam = fontFamily(P.textFont);
+            const hasA = !!(P.textA || '').trim(), hasB = !!(P.textB || '').trim();
+            const horizText = P.textPos === 'horiz';
+            const fsA = Math.round(IW * P.textSizeA / 100), fsB = Math.round(IW * P.textSizeB / 100);
+            let tAw = 0, tBw = 0, tAlines = [], tBlines = [];
+            if (hasA) {
+                mctx.font = `${fsA}px ${tfam}`;
+                tAlines = horizText ? textBlock(P.textA, IW * 0.3) : textBlock(P.textA, IW * 0.9);
+                tAw = Math.max(...tAlines.map(t => mctx.measureText(t).width));
+            }
+            if (hasB) {
+                mctx.font = `${fsB}px ${tfam}`;
+                tBlines = horizText ? textBlock(P.textB, IW * 0.3) : textBlock(P.textB, IW * 0.9);
+                tBw = Math.max(...tBlines.map(t => mctx.measureText(t).width));
+            }
+            const tAh = hasA ? tAlines.length * fsA * 1.45 + fsA * 1.1 : 0;
+            const tBh = hasB ? tBlines.length * fsB * 1.45 + fsB * 1.1 : 0;
+            const padA = horizText ? (hasA ? tAw + fsA * 1.6 : 0) : tAh;
+            const padB = horizText ? (hasB ? tBw + fsB * 1.6 : 0) : tBh;
+            // 主体版面
             let W, H, ix = 0, iy = 0, iw = IW, ih = IH, panel;
             if (P.layout === 'frame') {
                 const m = Math.round(IW * P.framePct / 100);
@@ -117,12 +157,29 @@
                 W = IW + pw; H = IH; ix = P.side === 'left' ? pw : 0;
                 panel = { x: P.side === 'left' ? 0 : IW, y: 0, w: pw, h: IH };
             }
-            cv.width = W; cv.height = H;
-            c.fillStyle = P.bg; c.fillRect(0, 0, W, H);
+            // 把附加文字的空间加到画布外围
+            const offX = horizText ? padA : 0, offY = horizText ? 0 : padA;
+            const CW = W + (horizText ? padA + padB : 0);
+            const CH = H + (horizText ? 0 : padA + padB);
+            cv.width = CW; cv.height = CH;
+            S.cvW = CW; S.cvH = CH;
+            c.fillStyle = P.bg; c.fillRect(0, 0, CW, CH);
+            c.save();
+            c.translate(offX, offY);
             c.drawImage(img, ix, iy, iw, ih);
-            S.geo = { x: ix, y: iy, w: iw, h: ih };
+            S.geo = { x: ix + offX, y: iy + offY, w: iw, h: ih };
             const G = holes.map(h => holeGeom(P, h, iw, ih));
-            G.forEach((g, i) => fillHole(c, P, ix + g.cx * iw, iy + g.cy * ih, g.w * iw, g.h * ih, holes[i].hrot || 0));
+            G.forEach((g, i) => {
+                const hx = ix + g.cx * iw, hy = iy + g.cy * ih, hw = g.w * iw, hh = g.h * ih;
+                fillHole(c, P, hx, hy, hw, hh, holes[i].hrot || 0);
+                if (P.holeShadow > 0) {
+                    c.save();
+                    c.translate(hx, hy);
+                    if (holes[i].hrot) c.rotate((holes[i].hrot) * Math.PI / 180);
+                    holeInnerShadow(c, P.shape, 0, 0, hw, hh, P);
+                    c.restore();
+                }
+            });
             const fsc = P.fragScale / 100;
             const sizes = G.map(g => ({ w: g.w * iw * fsc, h: g.h * ih * fsc }));
             let centers = null;
@@ -149,8 +206,11 @@
                 G.forEach((g, i) => {
                     const o = holes[i];
                     const dx = centers[i].x + (o.ox || 0), dy = centers[i].y + (o.oy || 0);
+                    c.save();
+                    if (setDropShadow(c, Math.max(sizes[i].w, sizes[i].h), P)) { /* 阴影已设 */ }
                     drawFrag(c, P, g, dx, dy, sizes[i].w, sizes[i].h, o.rot || 0, o.hrot || 0);
-                    S.hits.push({ kind: 'frag', i, x: dx - sizes[i].w / 2, y: dy - sizes[i].h / 2, w: sizes[i].w, h: sizes[i].h });
+                    c.restore();
+                    S.hits.push({ kind: 'frag', i, x: dx - sizes[i].w / 2 + offX, y: dy - sizes[i].h / 2 + offY, w: sizes[i].w, h: sizes[i].h });
                 });
                 if (!S.noGuides && S.sel >= 0 && G[S.sel]) {
                     const o = holes[S.sel];
@@ -180,7 +240,10 @@
                     const n = holes.length, take = P.fillGlyph ? spots.length : Math.min(n, spots.length);
                     for (let k = 0; k < take; k++) {
                         const i = k % n, z = sizes[i], f = cell * 0.92 / Math.max(z.w, z.h);
+                        c.save();
+                        setDropShadow(c, Math.max(z.w, z.h) * f, P);
                         drawFrag(c, P, G[i], spots[k].x, spots[k].y, z.w * f, z.h * f, holes[i].rot || 0, holes[i].hrot || 0);
+                        c.restore();
                     }
                 }
             }
@@ -188,7 +251,28 @@
                 const g = G[S.sel];
                 drawRing(c, P, ix + g.cx * iw, iy + g.cy * ih, g.w * iw, g.h * ih, holes[S.sel].hrot || 0);
             }
-            applyGrain(c, W, H, P.grain);
+            c.restore();
+            // 附加文字
+            if (hasA || hasB) {
+                c.fillStyle = P.textColor; c.textBaseline = 'middle';
+                const put = (lines, fs, bx, by, bw) => {
+                    c.font = `${fs}px ${tfam}`;
+                    const al = P.textAlign;
+                    c.textAlign = al === 'center' ? 'center' : al === 'right' ? 'right' : 'left';
+                    const ax = al === 'center' ? bx + bw / 2 : al === 'right' ? bx + bw : bx;
+                    let y = by;
+                    lines.forEach(t => { c.fillText(t, ax, y); y += fs * 1.45; });
+                };
+                if (horizText) {
+                    if (hasA) put(tAlines, fsA, fsA * 0.8, CH / 2 - (tAlines.length - 1) * fsA * 0.72, padA - fsA * 1.6);
+                    if (hasB) put(tBlines, fsB, CW - padB + fsB * 0.8, CH / 2 - (tBlines.length - 1) * fsB * 0.72, padB - fsB * 1.6);
+                } else {
+                    if (hasA) put(tAlines, fsA, CW * 0.05, fsA * 1.1, CW * 0.9);
+                    if (hasB) put(tBlines, fsB, CW * 0.05, CH - tBh + fsB * 1.0, CW * 0.9);
+                }
+                c.textAlign = 'left';
+            }
+            applyGrain(c, CW, CH, P.grain);
         },
         onDown(x, y, P) {
             const inside = h => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h;
@@ -227,7 +311,7 @@
             S.sel = holes.length - 1;
             return true;
         },
-        onMove(x, y, P, ui2, cvRef) {
+        onMove(x, y) {
             const d = S.drag;
             if (!d) return false;
             const ho = S.cut.holes[d.i];
@@ -255,7 +339,6 @@
         },
     };
 
-    // slots：图片可在文字的下/上/左/右
     function slotsFrame(P, IW, IH) {
         const side = P.slotSide || 'below';
         if (side === 'left' || side === 'right') {
@@ -316,7 +399,16 @@
         c.fillStyle = P.bg; c.fillRect(0, 0, W, H);
         c.drawImage(S.img, F.imgX, imgY, F.iw, F.ih);
         S.geo = { x: F.imgX, y: imgY, w: F.iw, h: F.ih };
-        G.forEach((g, i) => fillHole(c, P, F.imgX + g.cx * F.iw, imgY + g.cy * F.ih, g.w * F.iw, g.h * F.ih, holes[i].hrot || 0));
+        G.forEach((g, i) => {
+            const hx = F.imgX + g.cx * F.iw, hy = imgY + g.cy * F.ih, hw = g.w * F.iw, hh = g.h * F.ih;
+            fillHole(c, P, hx, hy, hw, hh, holes[i].hrot || 0);
+            if (P.holeShadow > 0) {
+                c.save(); c.translate(hx, hy);
+                if (holes[i].hrot) c.rotate(holes[i].hrot * Math.PI / 180);
+                holeInnerShadow(c, P.shape, 0, 0, hw, hh, P);
+                c.restore();
+            }
+        });
         if (!S.noGuides && S.sel >= 0 && G[S.sel]) {
             const g = G[S.sel];
             drawRing(c, P, F.imgX + g.cx * F.iw, imgY + g.cy * F.ih, g.w * F.iw, g.h * F.ih, holes[S.sel].hrot || 0);
@@ -330,8 +422,11 @@
                 if (it.nl) return;
                 if (it.slot) {
                     const fx = x + fs * 0.06, g = G[it.i];
-                    if (g) drawFrag(c, P, g, fx + it.fw / 2, cy, it.fw, it.fh, holes[it.i].rot || 0, holes[it.i].hrot || 0);
-                    else if (!S.noGuides) {
+                    if (g) {
+                        c.save(); setDropShadow(c, Math.max(it.fw, it.fh), P);
+                        drawFrag(c, P, g, fx + it.fw / 2, cy, it.fw, it.fh, holes[it.i].rot || 0, holes[it.i].hrot || 0);
+                        c.restore();
+                    } else if (!S.noGuides) {
                         c.save(); c.setLineDash([6, 5]); c.strokeStyle = P.fg;
                         c.strokeRect(fx, cy - it.fh / 2, it.fw, it.fh); c.restore();
                     }
@@ -373,7 +468,16 @@
         c.fillStyle = P.bg; c.fillRect(0, 0, W, H);
         c.drawImage(S.img, F.imgX, imgY, F.iw, F.ih);
         S.geo = { x: F.imgX, y: imgY, w: F.iw, h: F.ih };
-        G.forEach((g, i) => fillHole(c, P, F.imgX + g.cx * F.iw, imgY + g.cy * F.ih, g.w * F.iw, g.h * F.ih, holes[i].hrot || 0));
+        G.forEach((g, i) => {
+            const hx = F.imgX + g.cx * F.iw, hy = imgY + g.cy * F.ih, hw = g.w * F.iw, hh = g.h * F.ih;
+            fillHole(c, P, hx, hy, hw, hh, holes[i].hrot || 0);
+            if (P.holeShadow > 0) {
+                c.save(); c.translate(hx, hy);
+                if (holes[i].hrot) c.rotate(holes[i].hrot * Math.PI / 180);
+                holeInnerShadow(c, P.shape, 0, 0, hw, hh, P);
+                c.restore();
+            }
+        });
         if (!S.noGuides && S.sel >= 0 && G[S.sel]) {
             const g = G[S.sel];
             drawRing(c, P, F.imgX + g.cx * F.iw, imgY + g.cy * F.ih, g.w * F.iw, g.h * F.ih, holes[S.sel].hrot || 0);
@@ -409,7 +513,9 @@
             }
             dx = clamp(dx, fw / 2, W - fw / 2);
             dy = clamp(dy, fh / 2, H - fh / 2);
+            c.save(); setDropShadow(c, Math.max(fw, fh), P);
             drawFrag(c, P, g, dx, dy, fw, fh, o.rot || 0, o.hrot || 0);
+            c.restore();
             S.hits.push({ kind: 'free', i, x: dx - fw / 2, y: dy - fh / 2, w: fw, h: fh });
         });
         c.restore();
@@ -420,9 +526,7 @@
     }
 
     /* =====================================================
-     * 模板 2：涂黑诗（解密档案风）
-     * 点中的词露出来；其余被黑条盖住，不画任何字
-     * 预览时在黑条上点一排小点，提示可点位置
+     * 模板 2：涂黑诗
      * ===================================================== */
     const blackout = {
         id: 'blackout',
@@ -458,7 +562,6 @@
             const lh = fs * 1.7;
             const guides = !S.noGuides;
             const hasKept = lines.map(l => l.items.some(it => !it.nl && S.keep.set.has(it.i)));
-            // 预览显示所有行（便于点选）；导出只保留有露字的行并压紧
             const shown = [];
             lines.forEach((l, li) => { if (guides || hasKept[li]) shown.push(li); });
             const rows = Math.max(1, shown.length);
@@ -475,7 +578,6 @@
                 let x = M;
                 const pos = real.map(it => { const p = { it, x }; x += it.w; return p; });
                 const lineEnd = pos.length ? pos[pos.length - 1].x + pos[pos.length - 1].it.w : M;
-                // 黑条
                 c.fillStyle = P.bar;
                 if (P.redact) {
                     let a = 0;
@@ -501,10 +603,8 @@
                         a = b + 1;
                     }
                 }
-                // 只画露出来的字；涂黑处一个字都不画
                 c.fillStyle = P.ink;
                 pos.forEach(p => { if (S.keep.set.has(p.it.i)) c.fillText(p.it.t, p.x, y + lh / 2); });
-                // 预览提示：黑条上一排小点，不是字，看不出原文
                 if (guides && P.dots) {
                     c.save(); c.fillStyle = 'rgba(255,255,255,.26)';
                     pos.forEach(p => {
@@ -523,19 +623,23 @@
     };
 
     /* =====================================================
-     * 模板 3：验证码九宫格
+     * 模板 3：验证码九宫格（可先上传一批图，按格子顺序分配）
      * ===================================================== */
     const captcha = {
         id: 'captcha',
         name: '验证码九宫格',
-        hint: '点格子：选中/取消；手指划过可连选。标题留空则取选中的文字。',
-        defaults: { cols: 4, rows: 4, gap: 8, title: '', sub: 'If there are none, click skip', blue: '#2f77e8' },
+        hint: '点格子：选中/取消；手指划过可连选。标题留空则取选中的文字。可以在「背景」里上传一批图片，格子会按顺序轮流用这些图。',
+        migrate(P) { P.multi ??= 'seq'; },
+        defaults: { cols: 4, rows: 4, gap: 8, title: '', sub: 'If there are none, click skip', blue: '#2f77e8', multi: 'seq' },
         controls: [
             { group: '文字', key: 'title', label: '大标题(留空=选中文字)', type: 'text' },
             { group: '文字', key: 'sub', label: '副标题', type: 'text' },
             { group: '网格', key: 'cols', label: '列数', type: 'range', min: 2, max: 8, step: 1, onChange() { S.cells = null; } },
             { group: '网格', key: 'rows', label: '行数', type: 'range', min: 2, max: 8, step: 1, onChange() { S.cells = null; } },
             { group: '网格', key: 'gap', label: '格间距', type: 'range', min: 0, max: 20, step: 1 },
+            { group: '背景', key: 'addImgs', label: '上传一批图片（可多选）', type: 'button', noUndo: true, onClick() { ui.addCaptchaImages(); } },
+            { group: '背景', key: 'clrImgs', label: '清掉这批图（回到单张主图）', type: 'button', noUndo: true, onClick() { S.capImgs = []; } },
+            { group: '背景', key: 'multi', label: '多图怎么分配', type: 'select', options: [['seq', '按格子顺序轮流'], ['rowwise', '每行换一张'], ['rand', '随机分配']] },
             { group: '颜色', key: 'blue', label: '主色', type: 'color' },
         ],
         snap() { return JSON.stringify([...(S.cells ? S.cells.set : [])]); },
@@ -543,7 +647,9 @@
         clear() { S.cells = { set: new Set() }; },
         render(cv, c, P) {
             S.cells ??= { set: new Set() };
-            const img = S.img, W = 1000, pad = 40, gap = P.gap, cols = P.cols, rows = P.rows;
+            S.capImgs ??= [];
+            const pics = S.capImgs.length ? S.capImgs : [S.img];
+            const W = 1000, pad = 40, gap = P.gap, cols = P.cols, rows = P.rows;
             const gw = W - pad * 2, cw = (gw - gap * (cols - 1)) / cols, gh = rows * cw + gap * (rows - 1);
             const headH = 280, footH = 170, y0 = pad + headH + gap, footY = y0 + gh + gap;
             cv.width = W; cv.height = Math.round(footY + footH);
@@ -559,14 +665,31 @@
             c.fillText(title, pad + 30, pad + 170);
             c.font = '32px Roboto, Arial, sans-serif';
             c.fillText(P.sub, pad + 30, pad + 232);
-            const s = Math.max(gw / imgW(img), gh / imgH(img));
-            const sx0 = (imgW(img) - gw / s) / 2, sy0 = (imgH(img) - gh / s) / 2;
+            // 单张图：整张切片；多张图：每格一张，各自按 cover 填满该格
+            const single = pics.length === 1;
+            let s = 1, sx0 = 0, sy0 = 0;
+            if (single) {
+                s = Math.max(gw / imgW(pics[0]), gh / imgH(pics[0]));
+                sx0 = (imgW(pics[0]) - gw / s) / 2;
+                sy0 = (imgH(pics[0]) - gh / s) / 2;
+            }
             for (let r = 0; r < rows; r++) {
                 for (let k = 0; k < cols; k++) {
                     const dx = pad + k * (cw + gap), dy = y0 + r * (cw + gap), idx = r * cols + k;
                     const sel = S.cells.set.has(idx);
                     const sc = sel ? 0.84 : 1, dw = cw * sc, off = (cw - dw) / 2;
-                    c.drawImage(img, sx0 + (dx - pad) / s, sy0 + (dy - y0) / s, cw / s, cw / s, dx + off, dy + off, dw, dw);
+                    if (single) {
+                        c.drawImage(pics[0], sx0 + (dx - pad) / s, sy0 + (dy - y0) / s, cw / s, cw / s, dx + off, dy + off, dw, dw);
+                    } else {
+                        let pi;
+                        if (P.multi === 'rowwise') pi = pics[r % pics.length];
+                        else if (P.multi === 'rand') pi = pics[Math.floor(hash(idx * 3 + 1) * pics.length) % pics.length];
+                        else pi = pics[idx % pics.length];
+                        c.save();
+                        c.beginPath(); c.rect(dx + off, dy + off, dw, dw); c.clip();
+                        drawCover(c, pi, dx + off, dy + off, dw, dw);
+                        c.restore();
+                    }
                     if (sel) {
                         const bx = dx + 6, by = dy + 6;
                         c.fillStyle = P.blue; c.beginPath(); c.arc(bx + 20, by + 20, 22, 0, Math.PI * 2); c.fill();
@@ -916,15 +1039,23 @@
     };
 
     /* =====================================================
-     * 模板 6：检测框关系图
+     * 模板 6：检测框关系图（连线可手动点两个碎片）
      * ===================================================== */
     const detect = {
         id: 'detect',
         name: '检测框关系图',
-        hint: '在上方图片上拖出方框（点一下方框可删除）。下方的碎片、以及图上和下方的文字标签，都可以按住拖到任意位置。',
-        defaults: { k: 2, cropScale: 1, panelH: 100, fontSize: 2.4, font: 'theme', labels: true, box: '#2f5be8', label: '#1d4ed8', panel: '#1250e8', lineColor: '#ffffff' },
+        hint(P) {
+            return P.linkMode === 'manual'
+                ? '上方图片拖出方框（点一下方框可删除）。下方：先点一个碎片，再点另一个，就在它们之间连线；同一对再点一次取消。按住碎片可拖动。'
+                : '上方图片拖出方框（点一下方框可删除）。下方的碎片和文字标签都可以按住拖动。连线是自动连最近的几个。';
+        },
+        migrate(P) { P.linkMode ??= 'auto'; },
+        defaults: { linkMode: 'auto', k: 2, cropScale: 1, panelH: 100, fontSize: 2.4, font: 'theme', labels: true, lineW: 2, box: '#2f5be8', label: '#1d4ed8', panel: '#1250e8', lineColor: '#ffffff' },
         controls: [
-            { group: '关系图', key: 'k', label: '每个方块连向最近的几个', type: 'range', min: 0, max: 4, step: 1 },
+            { group: '关系图', key: 'linkMode', label: '连线方式', type: 'select', options: [['auto', '自动连最近的几个'], ['manual', '手动点两个碎片连线'], ['none', '不连线']] },
+            { group: '关系图', key: 'k', label: '每个方块连向最近的几个', type: 'range', min: 0, max: 4, step: 1, show: P => P.linkMode === 'auto' },
+            { group: '关系图', key: 'lineW', label: '线宽', type: 'range', min: 1, max: 8, step: 0.5, show: P => P.linkMode !== 'none' },
+            { group: '关系图', key: 'clrLinks', label: '清掉手动连的线', type: 'button', show: P => P.linkMode === 'manual', onClick() { S.detLinks = []; S.detPick = -1; } },
             { group: '关系图', key: 'cropScale', label: '碎片缩放', type: 'range', min: 0.4, max: 2, step: 0.1 },
             { group: '关系图', key: 'panelH', label: '下方区域高度 %', type: 'range', min: 50, max: 140, step: 5 },
             { group: '关系图', key: 'resetLayout', label: '碎片和文字放回默认位置', type: 'button', onClick() { S.detPos = {}; S.detLab = {}; } },
@@ -938,10 +1069,15 @@
         ],
         exportOk() { return S.boxes.length > 0; },
         exportMsg: '还没有画方框，先在图上拖出几个吧',
-        snap() { return JSON.stringify({ b: S.boxes, p: S.detPos, l: S.detLab }); },
-        restore(str) { const d = JSON.parse(str); S.boxes = d.b || []; S.detPos = d.p || {}; S.detLab = d.l || {}; },
-        clear() { S.boxes = []; S.detPos = {}; S.detLab = {}; },
+        snap() { return JSON.stringify({ b: S.boxes, p: S.detPos, l: S.detLab, k: S.detLinks }); },
+        restore(str) {
+            const d = JSON.parse(str);
+            S.boxes = d.b || []; S.detPos = d.p || {}; S.detLab = d.l || {}; S.detLinks = d.k || [];
+            S.detPick = -1;
+        },
+        clear() { S.boxes = []; S.detPos = {}; S.detLab = {}; S.detLinks = []; S.detPick = -1; },
         render(cv, c, P) {
+            S.detLinks ??= []; if (S.detPick === undefined) S.detPick = -1;
             const img = S.img, W = 1200, IW = W, IH = Math.round(W * imgH(img) / imgW(img)), PH = Math.round(IH * P.panelH / 100);
             cv.width = W; cv.height = IH + PH;
             S.cvW = cv.width; S.cvH = cv.height;
@@ -949,6 +1085,7 @@
             c.fillStyle = P.panel; c.fillRect(0, IH, W, PH);
             S.det = { IW, IH, PH };
             const boxes = S.boxes;
+            if (S.detPick >= boxes.length) S.detPick = -1;
             c.lineWidth = 3; c.strokeStyle = P.box;
             boxes.forEach(b => c.strokeRect(b.x0 * IW, b.y0 * IH, (b.x1 - b.x0) * IW, (b.y1 - b.y0) * IH));
             if (!S.noGuides && S.tmpBox) {
@@ -964,17 +1101,33 @@
                     y: ps ? IH + ps.fy * PH : IH + (b.y0 + b.y1) / 2 * PH,
                 };
             });
+            // 连线
             const pairs = new Set();
-            pts.forEach((p, i) => {
-                pts.map((q, j) => ({ j, d: Math.hypot(p.x - q.x, p.y - q.y) })).filter(o => o.j !== i)
-                    .sort((a, b) => a.d - b.d).slice(0, P.k).forEach(o => pairs.add(Math.min(i, o.j) + '-' + Math.max(i, o.j)));
-            });
-            c.strokeStyle = P.lineColor; c.lineWidth = 2; c.globalAlpha = 0.85;
-            pairs.forEach(k => { const [a, b] = k.split('-').map(Number); c.beginPath(); c.moveTo(pts[a].x, pts[a].y); c.lineTo(pts[b].x, pts[b].y); c.stroke(); });
-            c.globalAlpha = 1;
+            if (P.linkMode === 'auto') {
+                pts.forEach((p, i) => {
+                    pts.map((q, j) => ({ j, d: Math.hypot(p.x - q.x, p.y - q.y) })).filter(o => o.j !== i)
+                        .sort((a, b) => a.d - b.d).slice(0, P.k).forEach(o => pairs.add(Math.min(i, o.j) + '-' + Math.max(i, o.j)));
+                });
+            } else if (P.linkMode === 'manual') {
+                S.detLinks.forEach(([a, b]) => { if (pts[a] && pts[b]) pairs.add(Math.min(a, b) + '-' + Math.max(a, b)); });
+            }
+            if (pairs.size) {
+                c.strokeStyle = P.lineColor; c.lineWidth = P.lineW; c.globalAlpha = 0.85; c.lineCap = 'round';
+                pairs.forEach(k => {
+                    const [a, b] = k.split('-').map(Number);
+                    if (!pts[a] || !pts[b]) return;
+                    c.beginPath(); c.moveTo(pts[a].x, pts[a].y); c.lineTo(pts[b].x, pts[b].y); c.stroke();
+                });
+                c.globalAlpha = 1;
+            }
             pts.forEach(p => {
                 c.fillStyle = '#fff'; c.fillRect(p.x - p.w / 2 - 3, p.y - p.h / 2 - 3, p.w + 6, p.h + 6);
                 c.drawImage(img, p.b.x0 * imgW(img), p.b.y0 * imgH(img), (p.b.x1 - p.b.x0) * imgW(img), (p.b.y1 - p.b.y0) * imgH(img), p.x - p.w / 2, p.y - p.h / 2, p.w, p.h);
+                // 手动连线模式下，第一个被选中的碎片高亮
+                if (!S.noGuides && P.linkMode === 'manual' && S.detPick === p.i) {
+                    c.save(); c.setLineDash([8, 6]); c.lineWidth = 3; c.strokeStyle = '#3b9bff';
+                    c.strokeRect(p.x - p.w / 2 - 7, p.y - p.h / 2 - 7, p.w + 14, p.h + 14); c.restore();
+                }
                 S.hits.push({ kind: 'crop', i: p.i, x: p.x - p.w / 2 - 3, y: p.y - p.h / 2 - 3, w: p.w + 6, h: p.h + 6 });
             });
             if (P.labels) {
@@ -998,13 +1151,19 @@
                 L2.forEach((w, i) => { const t = L2.length > 1 ? i / (L2.length - 1) : 0.5; put('b' + i, i, w, IW * (0.06 + 0.8 * t), IH + PH * zy[i % zy.length], P.lineColor); });
             }
         },
-        onDown(x, y) {
+        onDown(x, y, P) {
             const d = S.det;
             if (!d) return false;
             for (let k = S.hits.length - 1; k >= 0; k--) {
                 const h = S.hits[k];
-                if ((h.kind === 'crop' || h.kind === 'lab') && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) {
-                    S.drag = { move: h.kind, i: h.i, key: h.key, sx: x, sy: y, cx: h.x + h.w / 2, cy: h.y + h.h / 2, ty: h.y + h.h / 2 };
+                if (!(x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h)) continue;
+                if (h.kind === 'crop') {
+                    // 手动连线：记下点击，松手时若没拖动就处理连线
+                    S.drag = { move: 'crop', i: h.i, sx: x, sy: y, cx: h.x + h.w / 2, cy: h.y + h.h / 2, moved: false };
+                    return true;
+                }
+                if (h.kind === 'lab') {
+                    S.drag = { move: 'lab', key: h.key, sx: x, sy: y, cx: h.x + h.w / 2, ty: h.y + h.h / 2 };
                     return true;
                 }
             }
@@ -1023,6 +1182,8 @@
             const dr = S.drag, d = S.det;
             if (!dr || !d) return false;
             if (dr.move === 'crop') {
+                if (Math.hypot(x - dr.sx, y - dr.sy) > 6) dr.moved = true;
+                if (!dr.moved) return false;
                 S.detPos[dr.i] = {
                     fx: clamp((dr.cx + x - dr.sx) / S.cvW, 0, 1),
                     fy: clamp((dr.cy + y - dr.sy - d.IH) / d.PH, 0, 1),
@@ -1042,45 +1203,99 @@
             if (dr.moved) S.tmpBox = { x0: Math.min(dr.x0, fx), y0: Math.min(dr.y0, fy), x1: Math.max(dr.x0, fx), y1: Math.max(dr.y0, fy) };
             return true;
         },
-        onUp() {
+        onUp(P) {
             const dr = S.drag, d = S.det;
+            if (dr && dr.move === 'crop' && !dr.moved) {
+                // 没拖动 = 点击：手动连线模式下处理配对
+                const mode = P && P.linkMode;
+                if (mode === 'manual') {
+                    S.detLinks ??= [];
+                    if (S.detPick < 0) S.detPick = dr.i;
+                    else if (S.detPick === dr.i) S.detPick = -1;
+                    else {
+                        const a = Math.min(S.detPick, dr.i), b = Math.max(S.detPick, dr.i);
+                        const at = S.detLinks.findIndex(q => q[0] === a && q[1] === b);
+                        if (at >= 0) S.detLinks.splice(at, 1); else S.detLinks.push([a, b]);
+                        S.detPick = -1;
+                    }
+                }
+            }
             if (dr && dr.box && d) {
                 const b = S.tmpBox;
-                if (!dr.moved && dr.hit >= 0) { S.boxes.splice(dr.hit, 1); S.detPos = {}; }
-                else if (b && (b.x1 - b.x0) * d.IW > 10 && (b.y1 - b.y0) * d.IH > 10) S.boxes.push(b);
+                if (!dr.moved && dr.hit >= 0) {
+                    S.boxes.splice(dr.hit, 1);
+                    S.detPos = {}; S.detLinks = []; S.detPick = -1;
+                } else if (b && (b.x1 - b.x0) * d.IW > 10 && (b.y1 - b.y0) * d.IH > 10) S.boxes.push(b);
             }
             S.tmpBox = null; S.drag = null;
         },
     };
 
     /* =====================================================
-     * 模板 7：图版标注（多图）
+     * 模板 7：图版标注（图片区可在左右上下；标注线手动指向）
      * ===================================================== */
     const board = {
         id: 'board',
         name: '图版标注',
-        hint: '第1行 = 标题，第2行 = 说明，之后每一行是一条图例（自动编罗马数字）。可以用「追加一张图片」放多张图，按网格排列。',
-        defaults: { ratio: '3:2', imgW: 66, cols: 2, gapPct: 1.5, fontSize: 1.15, font: 'theme', tick: true, bg: '#ffffff', ink: '#222222' },
+        hint: '第1行 = 标题，第2行 = 说明，之后每一行是一条图例（自动编罗马数字）。在图片上点一下，会把当前编号的标注线指到那个点；再点另一处可改位置。「下一个编号」切换要指的那一条。',
+        migrate(P) {
+            P.imgSide ??= 'right';
+            P.leader ??= true; P.leaderW ??= 1.4; P.dotR ??= 3;
+        },
+        defaults: {
+            ratio: '3:2', imgSide: 'right', imgW: 66, cols: 2, gapPct: 1.5,
+            fontSize: 1.15, font: 'theme', tick: true, leader: true, leaderW: 1.4, dotR: 3,
+            bg: '#ffffff', ink: '#222222', lineColor: '#222222',
+        },
         controls: [
             { group: '版面', key: 'ratio', label: '画面比例', type: 'select', options: RATIO_OPTS },
-            { group: '版面', key: 'imgW', label: '图片区域宽度 %', type: 'range', min: 40, max: 85, step: 1 },
+            { group: '版面', key: 'imgSide', label: '图片区放在哪', type: 'select', options: [['right', '右边'], ['left', '左边'], ['top', '上方'], ['bottom', '下方']], onChange() { S.boardPts = {}; } },
+            { group: '版面', key: 'imgW', label: '图片区域占比 %', type: 'range', min: 40, max: 85, step: 1 },
             { group: '版面', key: 'cols', label: '图片列数（多图时）', type: 'range', min: 1, max: 4, step: 1 },
             { group: '版面', key: 'gapPct', label: '图片间距 %', type: 'range', min: 0, max: 6, step: 0.25 },
             { group: '版面', key: 'addImg', label: '追加一张图片', type: 'button', noUndo: true, onClick() { ui.addBoardImage(); } },
             { group: '版面', key: 'clrImg', label: '只保留主图', type: 'button', noUndo: true, onClick() { S.boardImgs = []; } },
             { group: '版面', key: 'tick', label: '显示小刻度线', type: 'checkbox' },
+            { group: '标注线', key: 'leader', label: '画标注线（从编号指向图上的点）', type: 'checkbox' },
+            { group: '标注线', key: 'nextIdx', label: '下一个编号', type: 'button', noUndo: true, onClick() {
+                S.boardCur = ((S.boardCur || 0) + 1);
+            } },
+            { group: '标注线', key: 'clrPts', label: '清掉所有指向点', type: 'button', onClick() { S.boardPts = {}; S.boardCur = 0; } },
+            { group: '标注线', key: 'leaderW', label: '线宽', type: 'range', min: 0.5, max: 5, step: 0.1, show: P => P.leader },
+            { group: '标注线', key: 'dotR', label: '端点圆点大小', type: 'range', min: 0, max: 10, step: 0.5, show: P => P.leader },
             { group: '文字', key: 'fontSize', label: '文字大小', type: 'range', min: 0.8, max: 2.2, step: 0.05 },
             { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
             { group: '颜色', key: 'bg', label: '背景色', type: 'color' },
             { group: '颜色', key: 'ink', label: '文字颜色', type: 'color' },
+            { group: '颜色', key: 'lineColor', label: '标注线颜色', type: 'color' },
         ],
+        snap() { return JSON.stringify({ p: S.boardPts, c: S.boardCur }); },
+        restore(str) { const d = JSON.parse(str); S.boardPts = d.p || {}; S.boardCur = d.c || 0; },
+        clear() { S.boardPts = {}; S.boardCur = 0; },
         render(cv, c, P) {
+            S.boardPts ??= {}; S.boardCur ??= 0;
             const img = S.img, [rw, rh] = RATIOS[P.ratio] || [3, 2], W = 1500, H = Math.round(W * rh / rw);
             cv.width = W; cv.height = H;
             S.cvW = W; S.cvH = H;
             c.fillStyle = P.bg; c.fillRect(0, 0, W, H);
             const fam = fontFamily(P.font), fs = Math.round(W * P.fontSize / 100);
-            const M = W * 0.035, areaW = W * P.imgW / 100, areaX = W - M - areaW, areaTop = H * 0.12, areaH = H * 0.76;
+            const M = W * 0.035;
+            const side = P.imgSide, horiz = side === 'left' || side === 'right';
+            // 图片区与文字区
+            let areaX, areaY, areaW, areaH, colX, colY, colW, colH;
+            if (horiz) {
+                areaW = W * P.imgW / 100 - M * 1.5;
+                areaH = H * 0.76; areaY = H * 0.12;
+                areaX = side === 'right' ? W - M - areaW : M;
+                colW = W - areaW - M * 3; colH = H - M * 2;
+                colX = side === 'right' ? M : W - M - colW; colY = M;
+            } else {
+                areaH = H * P.imgW / 100 - M * 1.5;
+                areaW = W - M * 2; areaX = M;
+                areaY = side === 'bottom' ? H - M - areaH : M * 2.2;
+                colW = W - M * 2; colH = H - areaH - M * 3.6;
+                colX = M; colY = side === 'bottom' ? M : areaY + areaH + M * 1.2;
+            }
             const pics = [img, ...S.boardImgs];
             const gap = W * P.gapPct / 100;
             const cols = Math.max(1, Math.min(P.cols, pics.length));
@@ -1090,7 +1305,7 @@
             let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
             pics.forEach((pi, k) => {
                 const cxi = k % cols, cyi = Math.floor(k / cols);
-                const gx = areaX + cxi * (cellW + gap), gy = areaTop + cyi * (cellH + gap);
+                const gx = areaX + cxi * (cellW + gap), gy = areaY + cyi * (cellH + gap);
                 const s2 = Math.min(cellW / imgW(pi), cellH / imgH(pi));
                 const w2 = imgW(pi) * s2, h2 = imgH(pi) * s2;
                 const x2 = gx + (cellW - w2) / 2, y2 = gy + (cellH - h2) / 2;
@@ -1099,61 +1314,111 @@
                 bx1 = Math.max(bx1, x2 + w2); by1 = Math.max(by1, y2 + h2);
             });
             const dx = bx0, dy = by0, dw = bx1 - bx0, dh = by1 - by0;
+            S.boardGeo = { dx, dy, dw, dh };
             const lines = textLines(SAMPLES.board);
             const title = lines[0] || '', desc = lines[1] || '', entries = lines.slice(2).filter(Boolean);
+            if (S.boardCur >= entries.length) S.boardCur = 0;
+            // 刻度与编号（沿图片外接框上下两侧）
             const n = entries.length, topN = Math.ceil(n / 2), botN = n - topN;
+            const numPos = [];   // 每条图例的编号位置，用来画标注线
             c.fillStyle = P.ink; c.strokeStyle = P.ink; c.lineWidth = 1.2;
             c.textBaseline = 'middle'; c.textAlign = 'center'; c.font = `${fs * 0.85}px ${fam}`;
             for (let i = 0; i < topN; i++) {
-                const x = dx + dw * (i + 0.5) / topN;
-                c.fillText(romanize(i + 1), x, dy - fs * 1.7);
+                const x = dx + dw * (i + 0.5) / topN, y = dy - fs * 1.7;
+                c.fillText(romanize(i + 1), x, y);
                 if (P.tick) { c.beginPath(); c.moveTo(x, dy - fs * 0.9); c.lineTo(x, dy - fs * 0.2); c.stroke(); }
+                numPos[i] = { x, y };
             }
             for (let j = 0; j < botN; j++) {
-                const x = dx + dw * (j + 0.5) / botN;
-                c.fillText(romanize(topN + j + 1), x, dy + dh + fs * 1.7);
+                const x = dx + dw * (j + 0.5) / botN, y = dy + dh + fs * 1.7;
+                c.fillText(romanize(topN + j + 1), x, y);
                 if (P.tick) { c.beginPath(); c.moveTo(x, dy + dh + fs * 0.9); c.lineTo(x, dy + dh + fs * 0.2); c.stroke(); }
+                numPos[topN + j] = { x, y };
             }
+            // 标注线：从编号指向手动点的那个点
+            if (P.leader) {
+                c.save();
+                c.strokeStyle = P.lineColor; c.lineWidth = P.leaderW; c.lineCap = 'round';
+                entries.forEach((t, i) => {
+                    const pt = S.boardPts[i], np = numPos[i];
+                    if (!pt || !np) return;
+                    const px = dx + pt.fx * dw, py = dy + pt.fy * dh;
+                    c.beginPath();
+                    c.moveTo(np.x, np.y + (py > np.y ? fs * 0.6 : -fs * 0.6));
+                    c.lineTo(px, py);
+                    c.stroke();
+                    if (P.dotR > 0) { c.beginPath(); c.arc(px, py, P.dotR, 0, Math.PI * 2); c.fillStyle = P.lineColor; c.fill(); }
+                });
+                c.restore();
+            }
+            // 文字栏
             c.textAlign = 'left';
-            const colW = Math.max(80, areaX - M * 2) * 0.92, x0 = M;
+            const tcolW = colW * 0.94;
             const flow = (k, draw) => {
-                let y = H * 0.08;
+                let y = colY + fs * 1.2;
                 const f1 = fs * k, f2 = fs * 0.9 * k;
                 if (title) {
                     mctx.font = `${f1}px ${fam}`; c.font = mctx.font;
                     if (draw && 'letterSpacing' in c) c.letterSpacing = (f1 * 0.08) + 'px';
-                    textBlock(title.toUpperCase(), colW).forEach(t => { if (draw) c.fillText(t, x0, y); y += f1 * 1.5; });
+                    textBlock(title.toUpperCase(), tcolW).forEach(t => { if (draw) c.fillText(t, colX, y); y += f1 * 1.5; });
                     if ('letterSpacing' in c) c.letterSpacing = '0px';
                 }
                 if (desc) {
-                    y = Math.max(y + f2 * 2, H * 0.3);
+                    y += f2 * 1.4;
                     mctx.font = `${f2}px ${fam}`; c.font = mctx.font;
                     if (draw && 'letterSpacing' in c) c.letterSpacing = (f2 * 0.06) + 'px';
-                    textBlock(desc.toUpperCase(), colW).forEach(t => { if (draw) c.fillText(t, x0, y); y += f2 * 1.6; });
+                    textBlock(desc.toUpperCase(), tcolW).forEach(t => { if (draw) c.fillText(t, colX, y); y += f2 * 1.6; });
                     if ('letterSpacing' in c) c.letterSpacing = '0px';
                 }
                 if (entries.length) {
                     y += f2 * 1.2;
                     mctx.font = `${f2}px ${fam}`; c.font = mctx.font;
-                    if (draw) c.fillText('KEY:', x0, y);
+                    if (draw) c.fillText('KEY:', colX, y);
                     y += f2 * 1.8;
                     const rw2 = mctx.measureText('XVIII.').width + f2 * 0.6;
                     entries.forEach((t, i) => {
-                        if (draw) c.fillText(romanize(i + 1) + '.', x0, y);
-                        textBlock(t, colW - rw2).forEach(l => { if (draw) c.fillText(l, x0 + rw2, y); y += f2 * 1.45; });
+                        if (draw) {
+                            // 当前要指向的那一条，前面加一个小记号
+                            if (!S.noGuides && i === S.boardCur) {
+                                c.save(); c.fillStyle = '#3b9bff';
+                                c.beginPath(); c.arc(colX - f2 * 0.5, y, f2 * 0.2, 0, Math.PI * 2); c.fill(); c.restore();
+                                c.fillStyle = P.ink;
+                            }
+                            c.fillText(romanize(i + 1) + '.', colX, y);
+                        }
+                        textBlock(t, tcolW - rw2).forEach(l => { if (draw) c.fillText(l, colX + rw2, y); y += f2 * 1.45; });
                         y += f2 * 0.3;
                     });
                 }
                 return y;
             };
             let k = 1;
-            for (let t = 0; t < 10 && flow(k, false) > H - M; t++) k *= 0.92;
+            for (let t = 0; t < 12 && flow(k, false) > colY + colH; t++) k *= 0.93;
             c.fillStyle = P.ink; flow(k, true);
         },
+        onDown(x, y, P) {
+            const g = S.boardGeo;
+            if (!g) return false;
+            if (x < g.dx || x > g.dx + g.dw || y < g.dy || y > g.dy + g.dh) return false;
+            S.boardPts ??= {};
+            S.boardPts[S.boardCur || 0] = { fx: (x - g.dx) / g.dw, fy: (y - g.dy) / g.dh };
+            S.drag = { bpt: S.boardCur || 0 };
+            return true;
+        },
+        onMove(x, y) {
+            const d = S.drag, g = S.boardGeo;
+            if (!d || d.bpt === undefined || !g) return false;
+            S.boardPts[d.bpt] = {
+                fx: clamp((x - g.dx) / g.dw, 0, 1),
+                fy: clamp((y - g.dy) / g.dh, 0, 1),
+            };
+            return true;
+        },
+        onUp() { S.drag = null; },
     };
 
     /* =====================================================
-     * 模板 8：缺字填空（字块区可在上/下/左/右）
+     * 模板 8：缺字填空
      * ===================================================== */
     function newCloze() { return { order: [], pos: {}, bs: {}, ts: {}, rot: {}, sel: -1 }; }
     CP.newCloze = newCloze;
@@ -1405,24 +1670,21 @@
     };
 
     /* =====================================================
-     * 模板 9：唱片封套（封套底图 / 中心标签图 各自可换；外面套一层胶壳）
+     * 模板 9：唱片封套（含胶壳）
      * ===================================================== */
     const VINYL_PAL = {
         cream: { bg: '#e7e0d1', ink: '#1a1a1a', disc: '#141414', groove: '#2e2e2e', lab: '#b8472f', labInk: '#f7efe2' },
         night: { bg: '#121218', ink: '#efefef', disc: '#000000', groove: '#2a2a33', lab: '#d8cf4a', labInk: '#17170f' },
         sand: { bg: '#cfa47a', ink: '#2b1a12', disc: '#1b1410', groove: '#33261e', lab: '#f0e6d2', labInk: '#2b1a12' },
     };
-    // 胶壳：半透明白膜 + 斜向高光条 + 边缘反光
     function drawSleeveWrap(c, x, y, w, h, P) {
         const amt = clamp(P.wrapPct / 100, 0, 1);
         if (amt <= 0) return;
         const ang = P.wrapAngle * Math.PI / 180;
         c.save();
         c.beginPath(); c.rect(x, y, w, h); c.clip();
-        // 整体雾面
         c.fillStyle = `rgba(255,255,255,${0.05 * amt})`;
         c.fillRect(x, y, w, h);
-        // 两道斜高光
         const D = Math.hypot(w, h);
         c.save();
         c.translate(x + w / 2, y + h / 2); c.rotate(ang);
@@ -1437,14 +1699,12 @@
         band(-w * 0.16, w * 0.3, 0.3);
         band(w * 0.26, w * 0.14, 0.17);
         c.restore();
-        // 边缘反光：内侧一圈亮边
         c.strokeStyle = `rgba(255,255,255,${0.5 * amt})`;
         c.lineWidth = Math.max(1.5, w * 0.004);
         c.strokeRect(x + c.lineWidth, y + c.lineWidth, w - c.lineWidth * 2, h - c.lineWidth * 2);
         c.strokeStyle = `rgba(255,255,255,${0.22 * amt})`;
         c.lineWidth = Math.max(1, w * 0.002);
         c.strokeRect(x + w * 0.012, y + h * 0.012, w * 0.976, h * 0.976);
-        // 右上角一点聚光
         const sp = c.createRadialGradient(x + w * 0.8, y + h * 0.14, 0, x + w * 0.8, y + h * 0.14, w * 0.5);
         sp.addColorStop(0, `rgba(255,255,255,${0.2 * amt})`);
         sp.addColorStop(1, 'rgba(255,255,255,0)');
@@ -1512,7 +1772,6 @@
             S.geo = { x: sx, y: sy, w: sleeve, h: sleeve, dcx, dcy, R, horiz, side, sleeve };
             const sleeveImg = S.vinylImgs.sleeve || S.img;
             const labelImg = S.vinylImgs.label || S.img;
-            // 唱片（封套下层）
             c.save();
             if (P.shadow) { c.shadowColor = 'rgba(0,0,0,.45)'; c.shadowBlur = R * 0.12; c.shadowOffsetX = R * 0.03; c.shadowOffsetY = R * 0.04; }
             c.beginPath(); c.arc(dcx, dcy, R, 0, Math.PI * 2); c.fillStyle = P.disc; c.fill();
@@ -1527,7 +1786,6 @@
                 }
                 c.restore();
             }
-            // 唱片上的一道弧形反光
             c.save();
             c.beginPath(); c.arc(dcx, dcy, R, 0, Math.PI * 2); c.clip();
             const dg = c.createLinearGradient(dcx - R, dcy - R, dcx + R, dcy + R);
@@ -1537,7 +1795,6 @@
             dg.addColorStop(1, 'rgba(255,255,255,0)');
             c.fillStyle = dg; c.fillRect(dcx - R, dcy - R, R * 2, R * 2);
             c.restore();
-            // 中心标签
             c.save();
             c.translate(dcx, dcy); c.rotate(P.spin * Math.PI / 180);
             c.beginPath(); c.arc(0, 0, labR, 0, Math.PI * 2);
@@ -1564,13 +1821,11 @@
                 c.fillStyle = P.bg; c.fill();
             }
             c.restore();
-            // 封套
             c.save();
             c.beginPath(); c.rect(sx, sy, sleeve, sleeve); c.clip();
             if (P.sleeveImg) drawCover(c, sleeveImg, sx, sy, sleeve, sleeve);
             else { c.fillStyle = P.bg; c.fillRect(sx, sy, sleeve, sleeve); }
             c.restore();
-            // 封套上的文字
             const rest = lines0.slice(1).filter(Boolean);
             const tfs = Math.round(W * P.titleSize / 100), ffs = Math.round(W * P.fontSize / 100);
             c.save();
@@ -1613,7 +1868,6 @@
                 }
             });
             c.restore();
-            // 胶壳：盖在封套上（可比封套略大一圈，像套进去的）
             if (P.wrapPct > 0) {
                 const ex = P.wrapEdge ? sleeve * 0.018 : 0;
                 drawSleeveWrap(c, sx - ex, sy - ex, sleeve + ex * 2, sleeve + ex * 2, P);
@@ -1639,8 +1893,10 @@
     };
 
     /* =====================================================
-     * 模板 10：找词游戏（word search）
-     * 方阵区域铺图片，字母压在图上；点格子自动高亮整条词
+     * 模板 10：找词游戏
+     * 玩法一「擦字露图」：每格默认显示字母 + 自选底色，图藏在下面；
+     *   点一格擦掉字和底色，露出该格对应的图片局部。
+     * 玩法二「高亮答案」：保留原来的点格高亮整条词。
      * ===================================================== */
     const WS_DIRS = [[1, 0], [0, 1], [1, 1], [1, -1], [-1, 0], [0, -1], [-1, -1], [-1, 1]];
     const WS_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -1684,42 +1940,58 @@
         for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) if (!grid[r][k]) grid[r][k] = WS_LETTERS[Math.floor(rng() * 26)];
         return { n, grid, placed };
     }
-    // 点一格：把这格所属的词整条高亮/取消（一格可能同时属于多个词，逐次切换）
-    function wsToggleAt(idx, G) {
+    function wsToggleWord(idx, G) {
         const owners = G.placed.filter(p => p.cells && p.cells.includes(idx));
-        if (!owners.length) { S.wsMark.has(idx) ? S.wsMark.delete(idx) : S.wsMark.add(idx); return true; }
+        if (!owners.length) { S.wsMark.has(idx) ? S.wsMark.delete(idx) : S.wsMark.add(idx); return; }
         const off = owners.find(p => !p.cells.every(q => S.wsMark.has(q)));
-        if (off) { off.cells.forEach(q => S.wsMark.add(q)); return true; }
+        if (off) { off.cells.forEach(q => S.wsMark.add(q)); return; }
         owners.forEach(p => p.cells.forEach(q => S.wsMark.delete(q)));
-        return true;
     }
     const wordsearch = {
         id: 'wordsearch',
         name: '找词游戏',
-        hint: '文字每一行 = 一个要藏进方阵的词。点一下格子：如果这格属于某个词，整条词会被高亮出来（再点一下取消）。「换一种排法」会重新藏一次。方阵里的底图可以单独替换。',
+        hint(P) {
+            return P.play === 'reveal'
+                ? '每格都是字母，图片藏在底下。点一格（手指划过可连选）就擦掉那格的字和底色，露出图片。擦得越多，图露得越多。'
+                : '文字每一行 = 一个要藏进方阵的词。点一下格子：如果这格属于某个词，整条词会被高亮；再点一次取消。';
+        },
+        migrate(P) {
+            P.play ??= 'reveal';
+            P.cellBg ??= '#f0ead9';
+            P.revealDim ??= 0;
+        },
         defaults: {
+            play: 'reveal',
             size: 12, diag: true, back: true, showList: true, listCols: 3,
-            gridImg: true, imgDim: 35, letterStyle: 'solid', strokeW: 2,
+            revealDim: 0, letterStyle: 'solid', strokeW: 2,
             ratio: '3:4', title: 'WORD SEARCH', fontSize: 100, font: 'mono', upper: true,
-            bg: '#f3efe4', ink: '#ffffff', listInk: '#1b1b1b', mark: '#d8563a', markAlpha: 55, grid: 18, grain: 12,
+            bg: '#f3efe4', cellBg: '#f0ead9', ink: '#1b1b1b', listInk: '#1b1b1b',
+            mark: '#d8563a', markAlpha: 55, grid: 30, grain: 12,
         },
         controls: [
+            { group: '玩法', key: 'play', label: '玩法', type: 'select', options: [['reveal', '擦字露图（点一格露出图片）'], ['mark', '高亮答案（点一格高亮整条词）']], onChange() { S.wsMark = new Set(); } },
             { group: '网格', key: 'size', label: '方阵边长（格数）', type: 'range', min: 8, max: 20, step: 1, onChange() { S.wsGrid = null; S.wsMark = new Set(); } },
             { group: '网格', key: 'diag', label: '允许斜着藏', type: 'checkbox', onChange() { S.wsGrid = null; } },
             { group: '网格', key: 'back', label: '允许反向藏', type: 'checkbox', onChange() { S.wsGrid = null; } },
             { group: '网格', key: 'reroll', label: '换一种排法', type: 'button', noUndo: true, onClick() { S.wsSeed = (S.wsSeed | 0) + 1; S.wsGrid = null; S.wsMark = new Set(); } },
             { group: '网格', key: 'grid', label: '格线不透明度 %', type: 'range', min: 0, max: 100, step: 5 },
-            { group: '选区', key: 'autoMark', label: '一键高亮全部答案', type: 'button', onClick(P) {
+            { group: '选区', key: 'revealAll', label: '全部擦开 / 全部高亮', type: 'button', onClick(P) {
+                const g = S.wsGrid || (S.wsGrid = wsBuild(P));
+                const s = new Set();
+                if (P.play === 'reveal') { for (let i = 0; i < g.n * g.n; i++) s.add(i); }
+                else g.placed.forEach(p => { if (p.cells) p.cells.forEach(i => s.add(i)); });
+                S.wsMark = s;
+            } },
+            { group: '选区', key: 'revealWords', label: '只擦开藏着词的格子', type: 'button', show: P => P.play === 'reveal', onClick(P) {
                 const g = S.wsGrid || (S.wsGrid = wsBuild(P));
                 const s = new Set();
                 g.placed.forEach(p => { if (p.cells) p.cells.forEach(i => s.add(i)); });
                 S.wsMark = s;
             } },
-            { group: '选区', key: 'clrMark', label: '清掉高亮', type: 'button', onClick() { S.wsMark = new Set(); } },
-            { group: '背景', key: 'gridImg', label: '方阵里铺图片（格子外是纯色）', type: 'checkbox' },
-            { group: '背景', key: 'pickImg', label: '换方阵里的底图', type: 'button', noUndo: true, show: P => P.gridImg, onClick() { ui.pickWsImage(); } },
-            { group: '背景', key: 'clrImg', label: '改回用主图', type: 'button', noUndo: true, show: P => P.gridImg, onClick() { S.wsImg = null; } },
-            { group: '背景', key: 'imgDim', label: '底图压暗 %', type: 'range', min: 0, max: 90, step: 1, show: P => P.gridImg },
+            { group: '选区', key: 'clrMark', label: '全部复原', type: 'button', onClick() { S.wsMark = new Set(); } },
+            { group: '背景', key: 'pickImg', label: '换藏在底下的图', type: 'button', noUndo: true, onClick() { ui.pickWsImage(); } },
+            { group: '背景', key: 'clrImg', label: '改回用主图', type: 'button', noUndo: true, onClick() { S.wsImg = null; } },
+            { group: '背景', key: 'revealDim', label: '露出的图压暗 %', type: 'range', min: 0, max: 80, step: 1 },
             { group: '版面', key: 'ratio', label: '画面比例', type: 'select', options: RATIO_OPTS },
             { group: '版面', key: 'showList', label: '显示要找的词清单', type: 'checkbox' },
             { group: '版面', key: 'listCols', label: '清单分几栏', type: 'range', min: 1, max: 4, step: 1, show: P => P.showList },
@@ -1729,11 +2001,12 @@
             { group: '文字', key: 'strokeW', label: '描边粗细', type: 'range', min: 1, max: 6, step: 0.5, show: P => P.letterStyle === 'outline' },
             { group: '文字', key: 'font', label: '字体', type: 'select', options: FONT_OPTS },
             { group: '文字', key: 'upper', label: '清单转大写', type: 'checkbox' },
-            { group: '颜色', key: 'bg', label: '底色', type: 'color' },
+            { group: '颜色', key: 'bg', label: '页面底色', type: 'color' },
+            { group: '颜色', key: 'cellBg', label: '格子底色（盖住图片的那层）', type: 'color' },
             { group: '颜色', key: 'ink', label: '字母颜色', type: 'color' },
             { group: '颜色', key: 'listInk', label: '标题 / 清单文字色', type: 'color' },
-            { group: '颜色', key: 'mark', label: '高亮颜色', type: 'color' },
-            { group: '颜色', key: 'markAlpha', label: '高亮不透明度 %', type: 'range', min: 20, max: 100, step: 5 },
+            { group: '颜色', key: 'mark', label: '高亮颜色', type: 'color', show: P => P.play === 'mark' },
+            { group: '颜色', key: 'markAlpha', label: '高亮不透明度 %', type: 'range', min: 20, max: 100, step: 5, show: P => P.play === 'mark' },
             { group: '质感', key: 'grain', label: '颗粒感 %', type: 'range', min: 0, max: 100, step: 5 },
         ],
         snap() { return JSON.stringify({ m: [...S.wsMark], s: S.wsSeed }); },
@@ -1764,44 +2037,53 @@
             const listH = lRows ? Math.round(lRows * lfs * 1.7 + lfs * 2.2) : 0;
             const avail = Math.min(W - M * 2, H - top - listH - M);
             const cell = avail / n, gx = (W - cell * n) / 2, gy = top;
+            const GW = cell * n;
             S.wsGeo = { gx, gy, cell, n };
-            // 方阵底图：只铺在格子范围内
-            if (P.gridImg) {
-                c.save();
-                c.beginPath(); c.rect(gx, gy, cell * n, cell * n); c.clip();
-                drawCover(c, S.wsImg || S.img, gx, gy, cell * n, cell * n);
-                if (P.imgDim > 0) { c.fillStyle = `rgba(0,0,0,${P.imgDim / 100})`; c.fillRect(gx, gy, cell * n, cell * n); }
-                c.restore();
+            const reveal = P.play === 'reveal';
+            // 1) 整个方阵先铺图（之后用格子底色盖住未擦开的格子）
+            c.save();
+            c.beginPath(); c.rect(gx, gy, GW, GW); c.clip();
+            drawCover(c, S.wsImg || S.img, gx, gy, GW, GW);
+            if (P.revealDim > 0) { c.fillStyle = `rgba(0,0,0,${P.revealDim / 100})`; c.fillRect(gx, gy, GW, GW); }
+            c.restore();
+            // 2) 盖底色：擦字露图模式只盖没点过的格子；高亮模式全盖
+            c.fillStyle = P.cellBg;
+            if (reveal) {
+                for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) {
+                    if (S.wsMark.has(r * n + k)) continue;
+                    c.fillRect(gx + k * cell, gy + r * cell, cell + 0.5, cell + 0.5);
+                }
+            } else {
+                c.fillRect(gx, gy, GW, GW);
+                if (S.wsMark.size) {
+                    c.save();
+                    c.globalAlpha = P.markAlpha / 100; c.fillStyle = P.mark;
+                    S.wsMark.forEach(i => {
+                        const r = Math.floor(i / n), k = i % n, pad = cell * 0.06;
+                        roundRect(c, gx + k * cell + pad, gy + r * cell + pad, cell - pad * 2, cell - pad * 2, cell * 0.22);
+                        c.fill();
+                    });
+                    c.restore();
+                }
             }
-            // 高亮（在字母下面）
-            if (S.wsMark.size) {
-                c.save();
-                c.globalAlpha = P.markAlpha / 100;
-                c.fillStyle = P.mark;
-                S.wsMark.forEach(i => {
-                    const r = Math.floor(i / n), k = i % n, pad = cell * 0.06;
-                    roundRect(c, gx + k * cell + pad, gy + r * cell + pad, cell - pad * 2, cell - pad * 2, cell * 0.22);
-                    c.fill();
-                });
-                c.restore();
-            }
-            // 格线
+            // 3) 格线：一直显示
             if (P.grid > 0) {
                 c.save();
                 c.globalAlpha = P.grid / 100; c.strokeStyle = P.ink; c.lineWidth = 1;
                 for (let i = 0; i <= n; i++) {
-                    c.beginPath(); c.moveTo(gx + i * cell, gy); c.lineTo(gx + i * cell, gy + n * cell); c.stroke();
-                    c.beginPath(); c.moveTo(gx, gy + i * cell); c.lineTo(gx + n * cell, gy + i * cell); c.stroke();
+                    c.beginPath(); c.moveTo(gx + i * cell, gy); c.lineTo(gx + i * cell, gy + GW); c.stroke();
+                    c.beginPath(); c.moveTo(gx, gy + i * cell); c.lineTo(gx + GW, gy + i * cell); c.stroke();
                 }
                 c.restore();
             }
-            // 字母
+            // 4) 字母：擦开的格子不画字
             const letterFs = cell * clamp(P.fontSize / 100, 0.5, 1.4) * 0.72;
             c.save();
             c.font = `bold ${letterFs}px ${fam}`;
             c.textAlign = 'center'; c.textBaseline = 'middle';
-            if (P.letterStyle === 'shadow') { c.shadowColor = 'rgba(0,0,0,.55)'; c.shadowBlur = letterFs * 0.12; c.shadowOffsetY = letterFs * 0.04; }
+            if (P.letterStyle === 'shadow') { c.shadowColor = 'rgba(0,0,0,.4)'; c.shadowBlur = letterFs * 0.1; c.shadowOffsetY = letterFs * 0.035; }
             for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) {
+                if (reveal && S.wsMark.has(r * n + k)) continue;
                 const px = gx + (k + 0.5) * cell, py = gy + (r + 0.5) * cell;
                 if (P.letterStyle === 'outline') {
                     c.strokeStyle = P.ink; c.lineWidth = P.strokeW; c.lineJoin = 'round';
@@ -1815,9 +2097,9 @@
             for (let r = 0; r < n; r++) for (let k = 0; k < n; k++) {
                 S.hits.push({ kind: 'wsc', i: r * n + k, x: gx + k * cell, y: gy + r * cell, w: cell, h: cell });
             }
-            // 清单
+            // 5) 清单
             if (lRows) {
-                let y = gy + n * cell + lfs * 2;
+                let y = gy + GW + lfs * 2;
                 c.textAlign = 'left'; c.textBaseline = 'middle';
                 c.fillStyle = P.listInk;
                 c.font = `bold ${Math.round(lfs * 0.9)}px ${fam}`;
@@ -1829,32 +2111,36 @@
                 G.placed.forEach((p, i) => {
                     const col = Math.floor(i / lRows), row = i % lRows;
                     const bx = M + col * colW, by = y + row * lfs * 1.7;
-                    const found = p.cells && p.cells.every(q => S.wsMark.has(q));
+                    const done = p.cells && p.cells.every(q => S.wsMark.has(q));
                     c.globalAlpha = p.cells ? 1 : 0.4;
                     const tx = P.upper ? p.w.toUpperCase() : p.w;
                     c.fillStyle = P.listInk;
                     c.fillText(tx, bx + lfs * 0.9, by);
-                    if (found) {
+                    if (done) {
                         const tw = c.measureText(tx).width;
-                        c.save(); c.strokeStyle = P.mark; c.lineWidth = 2;
+                        c.save(); c.strokeStyle = reveal ? P.listInk : P.mark; c.lineWidth = 2;
                         c.beginPath(); c.moveTo(bx + lfs * 0.8, by); c.lineTo(bx + lfs * 1.0 + tw, by); c.stroke(); c.restore();
                     }
                     c.beginPath(); c.arc(bx + lfs * 0.3, by, lfs * 0.16, 0, Math.PI * 2);
-                    c.fillStyle = found ? P.mark : P.listInk; c.fill();
+                    c.fillStyle = done ? (reveal ? P.listInk : P.mark) : P.listInk; c.fill();
                     c.globalAlpha = 1;
                 });
             }
             applyGrain(c, W, H, P.grain);
         },
         onDown(x, y, P) {
+            if (P.play === 'reveal') return paintDown('wsc', S.wsMark, x, y);
             const h = S.hits.find(h => h.kind === 'wsc' && x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
             if (!h) return false;
             const G = S.wsGrid || (S.wsGrid = wsBuild(P));
-            wsToggleAt(h.i, G);
+            wsToggleWord(h.i, G);
             S.drag = { ws: true };
             return true;
         },
-        onMove() { return false; },
+        onMove(x, y, P) {
+            if (P.play === 'reveal') return paintMove(x, y);
+            return false;
+        },
         onUp() { S.drag = null; },
     };
 
@@ -1862,7 +2148,6 @@
     [cutout, blackout, captcha, shape, timeline, detect, board, cloze, vinyl, wordsearch]
         .forEach(t => { TEMPLATES[t.id] = t; });
 
-    // 给外部脚本注册自定义模板用
     window.CutoutPoster = {
         register(t) { TEMPLATES[t.id] = t; if (CP.ui.refreshTplSelect) CP.ui.refreshTplSelect(); },
         templates: TEMPLATES,
