@@ -127,16 +127,3 @@
 #cp_overlay textarea, #cp_overlay input[type=text] { -webkit-user-select: text; user-select: text; }
 #cp_expimg { -webkit-touch-callout: default; -webkit-user-select: auto; user-select: auto; }
 #cp_shape_cv { align-self: center; width: min(280px, 100%); aspect-ratio: 1; border-radius: 8px; background: rgba(255,255,255,.06); touch-action: none; }
-
-/* 防止在设置区上下滑动时误碰参数；分区更清晰 */
-#cp_panel .cp_side { overscroll-behavior: contain; touch-action: pan-y; gap: 12px; }
-#cp_panel .cp_pane { gap: 14px; }
-#cp_panel .cp_card { gap: 10px; padding: 12px; margin-bottom: 2px; border-color: rgba(255,255,255,.16); background: rgba(255,255,255,.075); }
-#cp_panel .cp_ct { padding-bottom: 5px; border-bottom: 1px solid rgba(255,255,255,.13); font-size: 12px; opacity: .82; }
-#cp_panel .cp_ctl { padding: 3px 0; }
-#cp_panel input[type=range] { min-height: 28px; touch-action: pan-y; }
-#cp_panel .cp_tabs { position: sticky; top: 0; z-index: 2; }
-@media (max-width: 900px), (max-aspect-ratio: 1/1) {
-  #cp_panel .cp_side { flex-basis: 42%; }
-  #cp_panel .cp_card { padding: 11px; }
-}
