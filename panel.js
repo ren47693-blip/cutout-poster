@@ -1,4 +1,4 @@
-/* 文字抽取成图 (Cutout Poster) v1.0 —— panel.js
+/* 文字抽取成图 (Cutout Poster) v1.1 —— panel.js
  * 面板 UI、交互、入口。依赖 core.js 与 templates.js。
  */
 (() => {
@@ -8,7 +8,8 @@
     const {
         SAMPLE, clamp, toast, download, getSettings, saveSettings, dbAll, dbPut,
         importedFonts, fontFamily, S, TEMPLATES, imgW, imgH,
-        normalizeShape, shapeFromImage, makePlaceholder, loadImage, setImage, ui,
+        normalizeShape, shapeFromImage, makePlaceholder, loadImage, setImage,
+        cropToCanvas, ui,
     } = CP;
 
     let overlay = null, cv = null, c2d = null, rafPending = false;
@@ -169,15 +170,16 @@
             let card = cardMap.get(ck);
             if (!card) {
                 card = document.createElement('div');
-                card.className = 'cp_card';
+                card.className = 'cp_card closed';           // 默认折叠
                 card.dataset.tpl = tplId;
                 const head = document.createElement('div'); head.className = 'cp_ct cp_ct_dyn'; head.textContent = g;
                 const body = document.createElement('div'); body.className = 'cp_cb';
                 const key2 = tplId + '|' + g;
-                if (S.closed.has(key2)) card.classList.add('closed');
+                if (S.opened.has(key2)) card.classList.remove('closed');   // 之前手动展开过的保持展开
                 head.addEventListener('click', () => {
                     card.classList.toggle('closed');
-                    if (S.closed.has(key2)) S.closed.delete(key2); else S.closed.add(key2);
+                    if (card.classList.contains('closed')) S.opened.delete(key2);
+                    else S.opened.add(key2);
                 });
                 card.append(head, body); card._body = body;
                 overlay.querySelector(`.cp_pane[data-pane="${tab}"]`).append(card);
@@ -250,7 +252,6 @@
         });
         updateVisibility();
     }
-    // 自定义形状增删、字体导入后，动态下拉要重建选项
     function refreshDynOptions() {
         Object.entries(tplDom).forEach(([id, d]) => {
             const tpl = TEMPLATES[id];
@@ -377,6 +378,20 @@
               <button id="cp_shape_ok" class="cp_btn">完成</button>
               <button id="cp_shape_clear" class="cp_btn">重画</button>
               <button id="cp_shape_cancel" class="cp_btn">取消</button>
+            </div>
+          </div>
+        </div>
+        <div id="cp_pick" style="display:none">
+          <div class="cp_expbox">
+            <canvas id="cp_pick_cv"></canvas>
+            <div class="cp_note" id="cp_pick_note">在图上拖一个方框，然后点「加进素材」。可以反复框、反复加。</div>
+            <div class="cp_row">
+              <button id="cp_pick_src" class="cp_btn">换一张图来截</button>
+              <button id="cp_pick_add" class="cp_btn">加进素材</button>
+            </div>
+            <div class="cp_row">
+              <button id="cp_pick_clr" class="cp_btn">清空素材</button>
+              <button id="cp_pick_close" class="cp_btn">完成</button>
             </div>
           </div>
         </div>
@@ -608,6 +623,81 @@
         const cEnd = () => { cd = null; };
         ccv.addEventListener('pointerup', cEnd); ccv.addEventListener('pointercancel', cEnd);
 
+        /* 从一张图里框选若干块当素材（九宫格用） */
+        let pickImg = null, pickBox = null, pickDrag = null, pickTarget = 'captcha';
+        const pcv = $('#cp_pick_cv');
+        pcv.style.touchAction = 'none';
+        const drawPick = () => {
+            if (!pickImg) return;
+            const maxW = 340;
+            const k = Math.min(maxW / imgW(pickImg), 300 / imgH(pickImg));
+            pcv.width = Math.max(1, Math.round(imgW(pickImg) * k));
+            pcv.height = Math.max(1, Math.round(imgH(pickImg) * k));
+            const pc = pcv.getContext('2d');
+            pc.drawImage(pickImg, 0, 0, pcv.width, pcv.height);
+            if (pickBox) {
+                const x = Math.min(pickBox.x0, pickBox.x1) * pcv.width;
+                const y = Math.min(pickBox.y0, pickBox.y1) * pcv.height;
+                const w = Math.abs(pickBox.x1 - pickBox.x0) * pcv.width;
+                const h = Math.abs(pickBox.y1 - pickBox.y0) * pcv.height;
+                pc.save();
+                pc.fillStyle = 'rgba(0,0,0,.35)';
+                pc.fillRect(0, 0, pcv.width, pcv.height);
+                pc.clearRect(x, y, w, h);
+                pc.drawImage(pickImg, Math.min(pickBox.x0, pickBox.x1) * imgW(pickImg), Math.min(pickBox.y0, pickBox.y1) * imgH(pickImg),
+                    Math.abs(pickBox.x1 - pickBox.x0) * imgW(pickImg), Math.abs(pickBox.y1 - pickBox.y0) * imgH(pickImg), x, y, w, h);
+                pc.setLineDash([7, 5]); pc.lineWidth = 2; pc.strokeStyle = '#3b9bff';
+                pc.strokeRect(x, y, w, h);
+                pc.restore();
+            }
+        };
+        const pickXY = e => {
+            const r = pcv.getBoundingClientRect();
+            return [clamp((e.clientX - r.left) / r.width, 0, 1), clamp((e.clientY - r.top) / r.height, 0, 1)];
+        };
+        pcv.addEventListener('pointerdown', e => {
+            const [x, y] = pickXY(e);
+            pickDrag = { x0: x, y0: y };
+            pickBox = { x0: x, y0: y, x1: x, y1: y };
+            try { pcv.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+            drawPick();
+        });
+        pcv.addEventListener('pointermove', e => {
+            if (!pickDrag) return;
+            const [x, y] = pickXY(e);
+            pickBox = { x0: pickDrag.x0, y0: pickDrag.y0, x1: x, y1: y };
+            drawPick();
+        });
+        const pickEnd = () => { pickDrag = null; };
+        pcv.addEventListener('pointerup', pickEnd);
+        pcv.addEventListener('pointercancel', pickEnd);
+        const pickCount = () => {
+            const n = (S.capImgs || []).length;
+            $('#cp_pick_note').textContent = n
+                ? `在图上拖一个方框，然后点「加进素材」。已有 ${n} 块素材。`
+                : '在图上拖一个方框，然后点「加进素材」。可以反复框、反复加。';
+        };
+        $('#cp_pick_src').addEventListener('click', () => pickFile('image/*', async f => {
+            try { pickImg = await loadImage(URL.createObjectURL(f)); pickBox = null; drawPick(); }
+            catch (e) { toast('图片加载失败'); }
+        }));
+        $('#cp_pick_add').addEventListener('click', () => {
+            if (!pickImg) return toast('先选一张图');
+            if (!pickBox || Math.abs(pickBox.x1 - pickBox.x0) < 0.02 || Math.abs(pickBox.y1 - pickBox.y0) < 0.02) {
+                return toast('先在图上拖一个方框');
+            }
+            const piece = cropToCanvas(pickImg, pickBox.x0, pickBox.y0, pickBox.x1, pickBox.y1, 900);
+            if (pickTarget === 'captcha') { S.capImgs ??= []; S.capImgs.push(piece); }
+            pickCount();
+            toast('已加入素材');
+            render();
+        });
+        $('#cp_pick_clr').addEventListener('click', () => {
+            if (pickTarget === 'captcha') S.capImgs = [];
+            pickCount(); render(); toast('素材已清空');
+        });
+        $('#cp_pick_close').addEventListener('click', () => { $('#cp_pick').style.display = 'none'; });
+
         /* 字体 / 预设 / 模板导入 */
         $('#cp_fontimp').addEventListener('click', () => pickFile('.ttf,.otf,.woff,.woff2', async f => {
             try {
@@ -794,7 +884,6 @@
                 render(); toast('已换藏在底下的图');
             } catch (e) { toast('图片加载失败'); }
         });
-        // 九宫格：一次上传多张，按格子顺序轮流用
         ui.addCaptchaImages = () => pickFiles('image/*', async files => {
             S.capImgs ??= [];
             let ok = 0;
@@ -803,8 +892,17 @@
                 catch (e) { /* 跳过失败的 */ }
             }
             render();
-            toast(ok ? '共 ' + S.capImgs.length + ' 张图' : '图片加载失败');
+            toast(ok ? '共 ' + S.capImgs.length + ' 块素材' : '图片加载失败');
         });
+        // 打开「从图里截一块」窗口，默认用当前主图
+        ui.openCropPicker = target => {
+            pickTarget = target || 'captcha';
+            pickImg = S.srcImg || S.img;
+            pickBox = null;
+            $('#cp_pick').style.display = 'flex';
+            pickCount();
+            drawPick();
+        };
 
         useControls(getSettings().template);
     }
@@ -812,7 +910,7 @@
     function closePanel() {
         overlay.classList.remove('open');
         document.body.style.overflow = '';
-        ['#cp_exp', '#cp_crop', '#cp_shape'].forEach(q => { const e = overlay.querySelector(q); if (e) e.style.display = 'none'; });
+        ['#cp_exp', '#cp_crop', '#cp_shape', '#cp_pick'].forEach(q => { const e = overlay.querySelector(q); if (e) e.style.display = 'none'; });
     }
 
     function openPanel(text) {
