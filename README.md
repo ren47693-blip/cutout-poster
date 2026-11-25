@@ -1,7 +1,7 @@
 # 文字抽取成图 (Cutout Poster) v0.6 —— SillyTavern 扩展
 
 ## 安装
-Git URL：扩展面板 → Install extension → 粘贴 https://github.com/你的用户名/cutout-poster
+Git URL：扩展面板 → Install extension → 粘贴 https://github.com/ren47693-blip/cutout-poster
 或把整个文件夹放进 SillyTavern/public/scripts/extensions/third-party/ 后刷新页面。
 
 ## 使用
